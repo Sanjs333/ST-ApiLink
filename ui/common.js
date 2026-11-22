@@ -163,13 +163,39 @@ function applyDialogTheme(contentEl, { skipBg = false, theme = null, controls = 
     }
 }
 
+function preparePopupLayout(popup) {
+    const root = popup.content?.querySelector('.cw-dialog');
+    const full = Boolean(root?.matches('.cw-manager, .cw-profile-editor, .cw-parameter-preset-editor'));
+    const editor = !full || Boolean(root?.classList.contains('cw-editor'));
+    popup.dlg.classList.add('cw-popup');
+    popup.dlg.classList.toggle('cw-editor-popup', editor);
+    popup.dlg.classList.toggle('cw-full-popup', full);
+    popup.dlg.classList.toggle('cw-compact-popup', !full);
+}
+
 function installPopupTheme(popup) {
+    preparePopupLayout(popup);
     if (popupThemes.has(popup)) return popupThemes.get(popup);
     const root = popup.dlg;
     if (!root.isConnected || !root.open) return () => {};
     const documentRef = root.ownerDocument;
     const windowRef = documentRef.defaultView;
     root.classList.add('cw-themed-popup');
+    const syncViewport = () => {
+        const viewport = windowRef.visualViewport;
+        const width = viewport?.width ?? windowRef.innerWidth;
+        const height = viewport?.height ?? windowRef.innerHeight;
+        const left = viewport?.offsetLeft ?? 0;
+        const top = viewport?.offsetTop ?? 0;
+        const values = { width, height, left, top,
+            right: Math.max(0, windowRef.innerWidth - left - width),
+            bottom: Math.max(0, windowRef.innerHeight - top - height) };
+        for (const [name, value] of Object.entries(values)) root.style.setProperty('--cw-popup-viewport-' + name, value + 'px');
+    };
+    syncViewport();
+    windowRef.addEventListener('resize', syncViewport);
+    windowRef.visualViewport?.addEventListener('resize', syncViewport);
+    windowRef.visualViewport?.addEventListener('scroll', syncViewport);
     let timer = null, frame = null, stopped = false, theme = null, themeChanged = true;
     const dirtyControls = new Set();
     const sync = () => {
@@ -212,6 +238,9 @@ function installPopupTheme(popup) {
         if (frame !== null) windowRef.cancelAnimationFrame(frame);
         themeObserver.disconnect();
         controlsObserver.disconnect();
+        windowRef.removeEventListener('resize', syncViewport);
+        windowRef.visualViewport?.removeEventListener('resize', syncViewport);
+        windowRef.visualViewport?.removeEventListener('scroll', syncViewport);
         dirtyControls.clear();
         root.removeEventListener('close', dispose);
         popupThemes.delete(popup);
@@ -238,6 +267,7 @@ export function themedPopupOptions(options = {}) {
 }
 
 export async function showThemedPopup(popup) {
+    preparePopupLayout(popup);
     const style = popup.dlg.style;
     const visibility = [style.getPropertyValue('visibility'), style.getPropertyPriority('visibility')];
     const restore = () => visibility[0] ? style.setProperty('visibility', ...visibility) : style.removeProperty('visibility');
@@ -254,9 +284,8 @@ export async function showThemedPopup(popup) {
 
 export function dialog(root, options = {}) {
     const editor = root.classList.contains('cw-editor');
-    const popup = new Popup(root, POPUP_TYPE.TEXT, '', { wide: true, large: !editor, okButton: '关闭', ...options });
-    popup.dlg.classList.add('cw-popup');
-    if (editor) popup.dlg.classList.add('cw-editor-popup');
+    const full = root.matches('.cw-manager, .cw-profile-editor, .cw-parameter-preset-editor');
+    const popup = new Popup(root, POPUP_TYPE.TEXT, '', { wide: full, large: full && !editor, okButton: '关闭', ...options });
     const footer = root.querySelector('.cw-footer');
     if (footer) {
         for (const control of footer.children) control.classList.add('cw-popup-action');

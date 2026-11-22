@@ -32,7 +32,7 @@ export const CUSTOM_MODEL_SOURCES = Object.freeze(Object.fromEntries([
     field: `${native}_model`,
 })])));
 
-const GROUP_ATTRIBUTE = 'data-connection-workbench-models';
+const MODEL_ATTRIBUTE = 'data-connection-workbench-models';
 const MODEL_SELECTORS = Object.values(CUSTOM_MODEL_SOURCES).map(config => config.selector).join(',');
 const MODEL_SOURCE_BY_ID = new Map(Object.entries(CUSTOM_MODEL_SOURCES).map(([source, config]) => [config.selector.slice(1), source]));
 
@@ -57,7 +57,7 @@ export function installCustomModels({ getSettings, saveSettings, onError = () =>
     const pendingSources = new Set();
     const observationRoot = documentRef.querySelector('#rm_api_block') ?? documentRef.body;
     const attached = new Map(), preferred = new Map(), revisions = new Map(), subscriptions = [];
-    const ownedGroups = new Set();
+    const ownedOptions = new Set();
     const report = error => { try { onError(error); } catch { /* Error presentation cannot break the host. */ } };
     const metadata = source => {
         if (!Object.hasOwn(CUSTOM_MODEL_SOURCES, source)) throw new Error('此来源没有可扩展的原生模型下拉框。');
@@ -125,37 +125,31 @@ export function installCustomModels({ getSettings, saveSettings, onError = () =>
         }
         attach(source, select);
         const entries = list(source), allowed = new Set(entries.map(item => item.id));
-        let group;
-        for (const owned of ownedGroups) if (owned.parentElement === select) { group = owned; break; }
-        if (!entries.length && !group) return;
-        // Only touch nodes created by this installation. Official options and additions
-        // from any other extension, including Custom Models, are never removed.
-        if (group) for (const option of [...group.children]) {
-            if (!allowed.has(option.value)) option.remove();
-        }
+        const selected = select.selectedOptions?.[0];
         const ownOptions = new Map();
-        if (group) for (const option of group.children) if (!ownOptions.has(option.value)) ownOptions.set(option.value, option);
+        for (const option of ownedOptions) {
+            if (!option.isConnected) { ownedOptions.delete(option); continue; }
+            if (option.closest('select') !== select) continue;
+            if (!allowed.has(option.value)) { option.remove(); ownedOptions.delete(option); continue; }
+            if (!ownOptions.has(option.value)) ownOptions.set(option.value, option);
+        }
         const existing = new Set([...select.options].map(option => option.value));
+        const insertionPoint = [...select.children].find(node => node.tagName !== 'OPTION' || node.value) ?? null;
         for (const entry of entries) {
             if (existing.has(entry.id)) {
                 const own = ownOptions.get(entry.id);
                 if (own && own.textContent !== entry.label) own.textContent = entry.label;
                 continue;
             }
-            if (!group) {
-                group = documentRef.createElement('optgroup');
-                group.label = '自定义模型';
-                group.setAttribute(GROUP_ATTRIBUTE, source);
-                ownedGroups.add(group);
-                select.append(group);
-            }
             const option = documentRef.createElement('option');
             option.value = entry.id;
             option.textContent = entry.label;
-            group.append(option);
+            option.setAttribute(MODEL_ATTRIBUTE, source);
+            ownedOptions.add(option);
+            select.insertBefore(option, insertionPoint);
             existing.add(entry.id);
         }
-        if (group && !group.children.length) { group.remove(); ownedGroups.delete(group); }
+        if (selected?.closest('select') === select && !selected.selected) select.selectedIndex = [...select.options].indexOf(selected);
         const desired = preferred.get(source);
         if (desired && allowed.has(desired)) {
             if (select.value !== desired || runtime()?.[metadata(source).field] !== desired) {
@@ -270,8 +264,8 @@ export function installCustomModels({ getSettings, saveSettings, onError = () =>
             observer?.disconnect();
             for (const unsubscribe of subscriptions) unsubscribe();
             for (const { select, handler } of attached.values()) select.removeEventListener('change', handler, true);
-            for (const group of ownedGroups) group.remove();
-            ownedGroups.clear(); attached.clear(); preferred.clear(); pendingSources.clear();
+            for (const option of ownedOptions) option.remove();
+            ownedOptions.clear(); attached.clear(); preferred.clear(); pendingSources.clear();
         },
     };
 }

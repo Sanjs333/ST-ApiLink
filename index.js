@@ -1,4 +1,4 @@
-import { CLIENT_VERSION, eventSource, saveSettingsDebounced, resultCheckStatus, main_api } from '../../../../script.js';
+import { CLIENT_VERSION, eventSource, saveSettingsDebounced, resultCheckStatus, main_api, getRequestHeaders } from '../../../../script.js';
 import { cancelStatusCheck } from './compat/status.js';
 import { event_types } from './compat/events.js';
 import { extension_settings } from '../../../extensions.js';
@@ -26,6 +26,8 @@ import { createProfileGroupControls } from './profiles/group-controls.js';
 import { createParameterPresetStore } from './parameters/store.js';
 import { installNativeParameterPresets } from './native/parameters.js';
 import { installNativeModelControls } from './native/models.js';
+import { fetchModelList } from './models/discovery.js';
+import { manageCustomModels } from './models/manager.js';
 import { installNativeChatUi } from './native/chat.js';
 
 const TRANSLATIONS = {
@@ -375,7 +377,7 @@ export async function init() {
         const progress = element('div', { class: 'cw-progress cw-note', role: 'status' });
         const usageControls = createUsageControls({ kind: 'profile', onChange: () => render(true) });
         const groups = runtime.groups ? createProfileGroupControls({
-            runtime, onChange: reset => render(reset),
+            runtime, models, onChange: reset => render(reset),
             onEdit: profile => editProfile(profile, { runtime, vault, models, parameterPresets, onDelete: deleteProfile }),
             getSelectedIds: () => [...selection], getMulti: () => multi,
             getSearching: () => Boolean(query.value.trim()),
@@ -562,30 +564,17 @@ export async function init() {
     }
 
     async function openModels(initialSource = oai_settings.chat_completion_source) {
-        const root = element('div', { class: 'cw-dialog cw-manager' });
-        const source = element('select', { class: 'text_pole', 'aria-label': '模型所属来源' }, Object.entries(CUSTOM_MODEL_SOURCES).map(([key, config]) => new Option(config.label, key)));
-        source.value = Object.hasOwn(CUSTOM_MODEL_SOURCES, initialSource) ? initialSource : 'openai';
-        const id = element('input', { class: 'text_pole', placeholder: '模型 ID', autocomplete: 'off', 'aria-label': '模型 ID' });
-        const label = element('input', { class: 'text_pole', placeholder: '名称（可选）', autocomplete: 'off', 'aria-label': '模型显示名称' });
-        const list = element('div', { class: 'cw-list' });
-        const query = searchInput('搜索已添加模型', () => render(true));
-        const scroller = continuousList(list, entry => element('div', { class: 'cw-list-row' }, [
-            element('div', { class: 'cw-row-info' }, [element('span', { class: 'cw-row-title', text: entry.label }), element('small', { class: 'cw-note', text: entry.id })]),
-            element('div', { class: 'cw-row-actions' }, [button('选择', guarded(() => models.select(source.value, entry.id))), button('移除', () => {
-                removeMergedModel(models, source.value, entry.id, { extensionSettings: extension_settings, documentRef: document, chatCompletionSettings: oai_settings, saveSettings: saveSettingsDebounced }); render();
-            })]),
-        ]), { emptyText: '尚未添加模型' });
-        function render(reset = false) {
-            const term = query.value.trim().toLocaleLowerCase();
-            const entries = listMergedModels(models, () => extension_settings, source.value).filter(entry => !term || (entry.id + ' ' + entry.label).toLocaleLowerCase().includes(term));
-            scroller.setItems(entries, { reset });
-        }
-        source.addEventListener('change', () => render(true));
-        root.append(element('h3', { text: '自定义模型' }), element('div', { class: 'cw-search-row' }, [query, source]),
-            element('div', { class: 'cw-model-add' }, [id, label, button('添加模型', guarded(() => { models.add(source.value, id.value, label.value || id.value); id.value = ''; label.value = ''; render(); }))]),
-            element('small', { class: 'cw-note', text: '填写服务实际支持的模型 ID。Custom 和 Azure 可直接使用原生模型输入框。' }), list);
-        render();
-        try { await dialog(root); } finally { scroller.cleanup(); }
+        await manageCustomModels({ initialSource,
+            getActiveModel: source => oai_settings[CUSTOM_MODEL_SOURCES[source]?.field],
+            listModels: source => listMergedModels(models, () => extension_settings, source),
+            addModel: (source, id, label) => models.add(source, id, label),
+            useModel: (source, id) => models.select(source, id),
+            removeModel: (source, id) => removeMergedModel(models, source, id, {
+                extensionSettings: extension_settings, documentRef: document,
+                chatCompletionSettings: oai_settings, saveSettings: saveSettingsDebounced,
+            }),
+            onError: showError,
+        });
     }
 
     function enhanceLabels() {
@@ -770,7 +759,18 @@ export async function init() {
     eventSource.on(event_types.APP_READY, ready);
     eventSource.on(event_types.MAIN_API_CHANGED, renderStatus);
     removers.push(() => eventSource.removeListener(event_types.APP_READY, ready), () => eventSource.removeListener(event_types.MAIN_API_CHANGED, renderStatus));
-    const nativeModels = installNativeModelControls({ onOpen: openModels, onError: showError });
+    const nativeModels = installNativeModelControls({ onOpen: openModels, onError: showError,
+        onSelectCatalog: (source, entry) => models.ensureOption(source, entry.id, entry.label),
+        getSource: () => main_api === 'openai' ? oai_settings.chat_completion_source : null,
+        getModelContext: () => JSON.stringify([main_api, oai_settings.chat_completion_source, oai_settings.vertexai_auth_mode,
+            oai_settings.vertexai_region, secret_state.vertexai_service_account_json?.find(entry => entry.active)?.id]),
+        onRefresh: async (source, { signal }) => {
+            const request = { chat_completion_source: source, vertexai_auth_mode: oai_settings.vertexai_auth_mode,
+                vertexai_region: oai_settings.vertexai_region,
+                secret_id: secret_state.vertexai_service_account_json?.find(entry => entry.active)?.id };
+            return fetchModelList(request, { headers: getRequestHeaders(), signal });
+        },
+    });
     const nativeChat = installNativeChatUi({ onError: showError });
     removers.push(nativeModels.cleanup, nativeChat.cleanup);
     const removePickers = installApiSelects({ onError: showError });

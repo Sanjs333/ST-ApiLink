@@ -112,7 +112,7 @@ export function syncPickerTheme(panel, control, { trigger, search } = {}) {
             control: Object.fromEntries(CONTROL_APPEARANCE.map(property => [property, controlStyle.getPropertyValue(property)])),
             input: Object.fromEntries(CONTROL_APPEARANCE.map(property => [property, inputStyle.getPropertyValue(property)])),
         };
-        const inputHeight = search ? inputProbe.getBoundingClientRect().height : 0;
+        const inputHeight = search ? inputProbe.offsetHeight : 0;
         const arrowStyle = Object.fromEntries(['backgroundImage', 'backgroundSize', 'backgroundPosition', 'borderTopWidth', 'borderRightWidth',
             'borderBottomWidth', 'borderLeftWidth', 'paddingRight'].map(property => [property, controlStyle[property]]));
         const backdrop = [...documentRef.querySelectorAll('.drawer-content')].map(node => windowRef.getComputedStyle(node)).find(style => style.backgroundImage !== 'none');
@@ -221,15 +221,15 @@ export function installSearchableSelects({ root = document, selectors = DEFAULT_
             if (!replaceExisting) return;
             for (const container of select2Containers(select)) {
                 const selection = container.querySelector('.select2-selection') ?? container;
-                const height = selection.getBoundingClientRect().height || parseFloat(windowRef.getComputedStyle(selection).height);
+                const height = selection.offsetHeight || parseFloat(windowRef.getComputedStyle(selection).height);
                 if (height > 1) existingHeight = height;
                 if (!superseded.has(container)) superseded.set(container, container.classList.contains('cw-picker-superseded'));
                 if (!container.classList.contains('cw-picker-superseded')) container.classList.add('cw-picker-superseded');
             }
         };
-        const previousRect = select.getBoundingClientRect();
+        const previousSize = { width: select.offsetWidth, height: select.offsetHeight };
         const previousContainer = replaceExisting ? select2Containers(select)[0] : null;
-        const initialRect = previousContainer?.getBoundingClientRect().width > 1 ? previousContainer.getBoundingClientRect() : previousRect;
+        const initialSize = previousContainer?.offsetWidth > 1 ? { width: previousContainer.offsetWidth, height: previousContainer.offsetHeight } : previousSize;
         const savedTabIndex = select.getAttribute('tabindex');
         const savedAriaHidden = select.getAttribute('aria-hidden');
         select.classList.add('cw-picker-native');
@@ -242,7 +242,7 @@ export function installSearchableSelects({ root = document, selectors = DEFAULT_
         wrapper.className = 'cw-picker';
         wrapper.style.margin = initialStyle.margin;
         if (select.classList.contains('flex1')) wrapper.classList.add('flex1');
-        else wrapper.style.width = select.style.width || (!initialRect.width || Math.abs(initialRect.width - parentWidth) < 2 ? '100%' : `${initialRect.width}px`);
+        else wrapper.style.width = select.style.width || (!initialSize.width || Math.abs(initialSize.width - parentWidth) < 2 ? '100%' : `${initialSize.width}px`);
         wrapper.dataset.cwUi = '';
         const trigger = documentRef.createElement('button');
         trigger.type = 'button';
@@ -311,7 +311,7 @@ export function installSearchableSelects({ root = document, selectors = DEFAULT_
         let renderedRows = null;
         let renderedStart = -1;
         let renderedEnd = -1;
-        let rowHeight = existingHeight || (initialRect.height > 1 ? initialRect.height : 0) || parseFloat(initialStyle.height) || (parseFloat(initialStyle.fontSize) || 15) * 1.5;
+        let rowHeight = existingHeight || (initialSize.height > 1 ? initialSize.height : 0) || parseFloat(initialStyle.height) || (parseFloat(initialStyle.fontSize) || 15) * 1.5;
         let metricsSignature = '';
         let themeSignature = '';
         let highlighted = -1;
@@ -333,7 +333,7 @@ export function installSearchableSelects({ root = document, selectors = DEFAULT_
         function syncMetrics() {
             const style = windowRef.getComputedStyle(select);
             // The hidden native select retains its natural height, font and padding.
-            const measuredHeight = select.getBoundingClientRect().height;
+            const measuredHeight = select.offsetHeight;
             const height = existingHeight || measuredHeight || parseFloat(style.height) || rowHeight;
             const signature = [height, Boolean(measuredHeight), style.margin, ...CONTROL_APPEARANCE.map(property => style.getPropertyValue(property)),
                 style.color, style.backgroundColor, style.backgroundImage, style.backgroundSize, style.backgroundPosition, select.hasAttribute('data-st-select-styler-processed')].join('|');

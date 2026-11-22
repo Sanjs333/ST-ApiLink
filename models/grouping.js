@@ -2,6 +2,7 @@
 
 const MODEL_SELECTOR = '#openai_api select[id^="model_"][id$="_select"],#rm_api_block select[id^="model_"][id$="_select"]';
 const OWN_GROUP = 'data-cw-auto-model-group';
+const CUSTOM_MODEL_ATTRIBUTE = 'data-connection-workbench-models';
 const FAMILIES = [
     ['Claude', /^(?:anthropic[/:])?claude(?:[-_.:/]|$)/i],
     ['Gemini', /^(?:google[/:])?(?:gemini|gemma)(?:[-_.:/]|$)/i],
@@ -19,6 +20,14 @@ export function modelFamily(id) {
     const text = String(id ?? '').replace(/^(?:\[[^\]]+\]|【[^】]+】)/, '').replace(/^models\//i, '');
     return FAMILIES.find(([, pattern]) => pattern.test(text))?.[0] ?? '其他';
 }
+
+export function modelVersionGroup(id) {
+    const text = String(id ?? '').replace(/^models\//i, '');
+    const version = text.match(/^(?:google[/:])?gemini[-_](\d{1,2}(?:\.\d{1,2})?)(?=[-_.:/]|$)/i)?.[1];
+    return version ? `Gemini ${version}` : '';
+}
+
+const versionGroupKey = label => String(label).toLowerCase().replace(/\.0$/, '');
 
 function relayParts(id) {
     const wrapped = id.match(/^(?:\[([^\]\r\n]{1,96})\]|【([^】\r\n]{1,96})】|\(([^)\r\n]{1,96})\)|（([^）\r\n]{1,96})）|\{([^}\r\n]{1,96})\}|〈([^〉\r\n]{1,96})〉|「([^」\r\n]{1,96})」|『([^』\r\n]{1,96})』)(?:\s*[/：:|_-]\s*|\s*)(.+)$/);
@@ -49,20 +58,23 @@ export function groupModelEntries(items) {
             if (prefixKey) prefixes.get(prefixKey).ids.add(id);
         }
         return { item, id, prefix, relayModel: relay?.model ?? '', prefixKey: prefix ? prefixIdentity(prefix) : '' };
-    });
+    }).sort((left, right) => Number(Boolean(right.item.custom || right.item.option?.hasAttribute?.(CUSTOM_MODEL_ATTRIBUTE)))
+        - Number(Boolean(left.item.custom || left.item.option?.hasAttribute?.(CUSTOM_MODEL_ATTRIBUTE))));
     const groups = new Map();
     for (const { item, id, prefix, relayModel, prefixKey } of prepared) {
         const family = modelFamily(id);
         const candidates = [...id.split(/[/:]/), ...(relayModel ? [relayModel] : [])];
         const nestedFamily = family !== '其他' ? family : candidates.map(modelFamily).find(value => value !== '其他') ?? '其他';
         const prefixGroup = prefixKey && prefixes.get(prefixKey);
-        const group = item.group || (prefixGroup?.ids?.size > 1 ? prefixGroup.display : nestedFamily);
+        const versionGroup = candidates.map(modelVersionGroup).find(Boolean) || modelVersionGroup(id);
+        const group = item.group || (prefixGroup?.ids?.size > 1 ? prefixGroup.display : versionGroup || nestedFamily);
         const key = item.groupKey ?? group;
         if (!groups.has(key)) groups.set(key, []);
         groups.get(key).push({ ...item, group, groupKey: key });
     }
     // A single family has nothing to organize; keep a short list visually quiet.
-    const showGroups = groups.size > 1 || prepared.some(({ item, prefixKey }) => item.group || (prefixKey && prefixes.get(prefixKey)?.ids?.size > 1));
+    const showGroups = groups.size > 1 || prepared.some(({ item, id, relayModel, prefixKey }) => item.group
+        || modelVersionGroup(relayModel || id) || (prefixKey && prefixes.get(prefixKey)?.ids?.size > 1));
     return [...groups.values()].flat().map(item => ({ ...item, group: showGroups ? item.group : '' }));
 }
 
@@ -78,33 +90,49 @@ export function installNativeModelGrouping({ root = document, onError = console.
     const styledControls = new Map();
     const styledSelectControls = new Map();
     const observe = () => observer.observe(root, { childList: true, subtree: true, attributes: true,
-        attributeFilter: ['value', 'label', 'hidden', 'class', 'disabled', 'data-st-select-styler-processed'], characterData: true });
+        attributeFilter: ['value', 'label', 'hidden', 'class', 'disabled', 'data-st-select-styler-processed', CUSTOM_MODEL_ATTRIBUTE], characterData: true });
     const report = error => { try { onError?.(error); } catch { /* UI reporters cannot interrupt cleanup. */ } };
     const sameNodes = (actual, desired) => actual.length === desired.length && actual.every((node, index) => node === desired[index]);
 
     function project(select) {
         let state = states.get(select);
         if (state && !state.dirty) return;
-        if (!state) { state = { order: new Map(), next: 0, groups: new Map() }; states.set(select, state); }
+        if (!state) { state = { order: new Map(), next: 0, groups: new Map(), homes: new Map(), nativeGroups: new Set() }; states.set(select, state); }
         const eligible = [], outsiders = [];
         for (const node of [...select.children]) {
-            if (node.tagName === 'OPTGROUP' && node.hasAttribute(OWN_GROUP)) eligible.push(...node.children);
-            else if (node.tagName === 'OPTION') eligible.push(node);
+            if (!state.order.has(node) && !node.hasAttribute(OWN_GROUP)) state.order.set(node, state.next++);
+            const native = node.tagName === 'OPTGROUP' && !node.hasAttribute(OWN_GROUP)
+                && ![...node.attributes].some(attribute => attribute.name.startsWith('data-'))
+                && /^Gemini \d{1,2}(?:\.\d{1,2})?$/i.test(node.label)
+                && [...node.children].every(option => option.tagName === 'OPTION' && versionGroupKey(modelVersionGroup(option.value)) === versionGroupKey(node.label));
+            if (native) state.nativeGroups.add(node);
+            if (node.tagName === 'OPTGROUP' && (node.hasAttribute(OWN_GROUP) || state.nativeGroups.has(node))) {
+                for (const option of node.children) {
+                    eligible.push(option);
+                    if (!state.homes.has(option)) state.homes.set(option, state.nativeGroups.has(node) ? node : null);
+                }
+            } else if (node.tagName === 'OPTION') {
+                eligible.push(node);
+                if (!state.homes.has(node)) state.homes.set(node, null);
+            }
             else outsiders.push(node);
         }
-        const present = new Set([...eligible, ...outsiders]);
+        for (const group of state.nativeGroups) if (group.parentElement !== select) state.nativeGroups.delete(group);
+        const present = new Set([...eligible, ...outsiders, ...state.nativeGroups]);
         for (const node of state.order.keys()) if (!present.has(node)) state.order.delete(node);
-        for (const node of [...select.children].flatMap(node => node.hasAttribute(OWN_GROUP) ? [...node.children] : [node])) {
+        for (const node of eligible) {
             if (!state.order.has(node)) state.order.set(node, state.next++);
         }
+        for (const option of state.homes.keys()) if (!present.has(option)) state.homes.delete(option);
         eligible.sort((a, b) => state.order.get(a) - state.order.get(b));
         const selected = select.selectedOptions?.[0] ?? [...select.options].find(option => option.selected);
         const placeholders = eligible.filter(option => !option.value);
         const entries = groupModelEntries(eligible.filter(option => option.value).map(option => ({ id: option.value, option })));
         const desired = [...placeholders], used = new Map();
+        const nativeGroups = new Map([...state.nativeGroups].map(group => [versionGroupKey(group.label), group]));
         for (const entry of entries) {
             if (!entry.group) { desired.push(entry.option); continue; }
-            let group = state.groups.get(entry.groupKey);
+            let group = nativeGroups.get(versionGroupKey(entry.group)) ?? state.groups.get(entry.groupKey);
             if (!group) {
                 group = documentRef.createElement('optgroup'); group.label = entry.group;
                 group.setAttribute(OWN_GROUP, ''); state.groups.set(entry.groupKey, group);
@@ -112,6 +140,7 @@ export function installNativeModelGrouping({ root = document, onError = console.
             if (!used.has(group)) { used.set(group, []); desired.push(group); }
             used.get(group).push(entry.option);
         }
+        for (const group of state.nativeGroups) if (!used.has(group)) desired.push(group);
         desired.push(...outsiders);
         for (const [group, options] of used) if (!sameNodes([...group.children], options)) group.replaceChildren(...options);
         if (!sameNodes([...select.children], desired)) select.replaceChildren(...desired);
@@ -131,7 +160,8 @@ export function installNativeModelGrouping({ root = document, onError = console.
         if (!rows.length) return;
         const optionGroups = new Map([...activeSelect.options].map(option => [option.value,
             option.parentElement?.tagName === 'OPTGROUP' ? option.parentElement.label : '']));
-        const suggestions = rows.map(row => ({ id: row.dataset.value, row,
+        const customIds = new Set([...activeSelect.options].filter(option => option.hasAttribute(CUSTOM_MODEL_ATTRIBUTE)).map(option => option.value));
+        const suggestions = rows.map(row => ({ id: row.dataset.value, row, custom: customIds.has(row.dataset.value),
             group: optionGroups.get(row.dataset.value) || undefined }));
         const entries = activeSelect.matches(MODEL_SELECTOR) ? groupModelEntries(suggestions)
             : suggestions.map(entry => ({ ...entry, groupKey: entry.group }));
@@ -399,7 +429,19 @@ export function installNativeModelGrouping({ root = document, onError = console.
         }
         for (const [select, state] of states) {
             const selected = select.selectedOptions?.[0];
-            const nodes = [...select.children].flatMap(node => node.hasAttribute(OWN_GROUP) ? [...node.children] : [node]);
+            const nodes = [], restored = new Map();
+            for (const node of select.children) {
+                if (state.nativeGroups.has(node) && !restored.has(node)) { restored.set(node, []); nodes.push(node); }
+                if (!node.hasAttribute(OWN_GROUP) && !state.nativeGroups.has(node)) { nodes.push(node); continue; }
+                for (const option of node.children) {
+                    const home = state.homes.get(option);
+                    if (home?.parentElement === select && state.nativeGroups.has(home)) {
+                        if (!restored.has(home)) { restored.set(home, []); nodes.push(home); }
+                        restored.get(home).push(option);
+                    } else nodes.push(option);
+                }
+            }
+            for (const [group, options] of restored) group.replaceChildren(...options.sort((a, b) => (state.order.get(a) ?? Infinity) - (state.order.get(b) ?? Infinity)));
             nodes.sort((a, b) => (state.order.get(a) ?? Infinity) - (state.order.get(b) ?? Infinity));
             if (!sameNodes([...select.children], nodes)) select.replaceChildren(...nodes);
             if (selected && !selected.selected) select.selectedIndex = [...select.options].indexOf(selected);

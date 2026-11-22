@@ -12,7 +12,7 @@ import { PROFILE_FIELD, profileSource, profileEditorFields, resolveProfileProxy,
 import { sourceKey } from './runtime.js';
 import { secretName } from '../secrets/manager.js';
 import { element, button, dialog, showError, themedPopupOptions } from '../ui/common.js';
-import { fetchModelList, supportsModelDiscovery } from '../models/discovery.js';
+import { fetchModelList, mergeModelSuggestions, supportsModelDiscovery } from '../models/discovery.js';
 import { installModelPicker } from '../models/picker.js';
 import { manageProxyPresets } from './proxies.js';
 import { sameProfileConnection } from './groups.js';
@@ -208,6 +208,16 @@ export async function editProfile(profile, { runtime, vault, models, parameterPr
         azureFields[key] = element('input', { class: 'text_pole', value: initialFields[key] ?? '' });
         azureContainer.append(field(label, azureFields[key]));
     }
+    const discoveryFields = {
+        workers_ai: { workers_ai_account_id: element('input', { class: 'text_pole', value: initialFields.workers_ai_account_id ?? '', autocomplete: 'off' }) },
+        siliconflow: { siliconflow_endpoint: element('select', { class: 'text_pole' }, [new Option('国际站（siliconflow.com）', 'global'), new Option('中国站（siliconflow.cn）', 'cn')]) },
+        pollinations: { pollinations_endpoint: element('select', { class: 'text_pole' }, [new Option('使用 API 密钥', 'authenticated'), new Option('匿名免密', 'anonymous')]) },
+    };
+    discoveryFields.siliconflow.siliconflow_endpoint.value = initialFields.siliconflow_endpoint ?? 'global';
+    discoveryFields.pollinations.pollinations_endpoint.value = initialFields.pollinations_endpoint ?? 'authenticated';
+    const discoveryContainers = Object.fromEntries(Object.entries(discoveryFields).map(([key, fields]) => [key,
+        element('div', { class: 'cw-fields' }, Object.entries(fields).map(([name, input]) =>
+            field(name === 'workers_ai_account_id' ? 'Cloudflare 账号 ID' : '服务端点', input)))]));
     const customParameters = Object.fromEntries(['custom_include_headers', 'custom_include_body', 'custom_exclude_body'].map(key => [key, String(initialFields[key] ?? '')]));
     const customContainer = element('div', { class: 'cw-fields' });
     const parameterControls = parameterPresets ? createParameterPresetControls({
@@ -272,7 +282,36 @@ export async function editProfile(profile, { runtime, vault, models, parameterPr
     function modelContextValue() {
         return JSON.stringify([source.value, endpoint.value, binding, explicitlyNoKey, proxy.value,
             Object.values(azureFields).map(input => input.value), vertexMode.value, region.value, project.value,
+            Object.values(discoveryFields).flatMap(fields => Object.values(fields).map(input => input.value)),
             customParameters.custom_include_headers]);
+    }
+    function availableModelEntries(fetched = []) {
+        const selectedSource = source.value;
+        const selector = CUSTOM_MODEL_SOURCES[selectedSource]?.selector
+            ?? ({ custom: '#model_custom_select', azure_openai: '#azure_openai_model' }[selectedSource]);
+        let useNative = selectedSource !== 'custom';
+        if (selectedSource === 'custom' && oai_settings.chat_completion_source === 'custom') {
+            try { useNative = normalizeCustomEndpoint(endpoint.value) === normalizeCustomEndpoint(oai_settings.custom_url); }
+            catch { useNative = false; }
+        }
+        const native = useNative && selector ? [...(root.ownerDocument.querySelector(selector)?.options ?? [])]
+            .filter(option => option.value && !option.disabled && !option.hidden && !option.parentElement?.disabled && !option.parentElement?.hidden)
+            .map(option => ({ id: option.value, label: option.textContent.trim() || option.value })) : [];
+        const saved = (runtime.profiles?.() ?? []).filter(entry => {
+            if (profileSource(entry) !== selectedSource) return false;
+            if (selectedSource !== 'custom') return true;
+            const fields = profileEditorFields(entry);
+            try { return normalizeCustomEndpoint(fields.custom_url) === normalizeCustomEndpoint(endpoint.value); }
+            catch { return false; }
+        }).map(entry => ({ id: entry[PROFILE_FIELD]?.model ?? entry['custom-connection']?.settings?.custom_model ?? entry.model }));
+        const additions = Object.hasOwn(CUSTOM_MODEL_SOURCES, selectedSource)
+            ? (models?.list(selectedSource) ?? []).map(entry => ({ ...entry, custom: true })) : [];
+        return mergeModelSuggestions(native, saved, fetched, additions);
+    }
+    function refreshModelSuggestions({ open = false, fetched = [] } = {}) {
+        const entries = availableModelEntries(fetched);
+        modelPicker?.setItems(entries, { open });
+        return entries;
     }
     function refreshModelContext() {
         const next = modelContextValue();
@@ -280,21 +319,30 @@ export async function editProfile(profile, { runtime, vault, models, parameterPr
         modelContext = next; modelRevision++;
         setModelStatus(modelController ? '连接设置已变更，请重新拉取模型。' : '');
         modelController?.abort();
-        modelPicker?.clear();
+        refreshModelSuggestions();
+        refreshModelLoading();
     }
+    const canFetchModels = () => supportsModelDiscovery(source.value, { vertexai_auth_mode: vertexMode.value });
     const fetchModels = button('拉取模型', async () => {
         if (modelController && !modelController.signal.aborted) return;
         refreshModelContext();
+        if (!canFetchModels()) {
+            model.focus({ preventScroll: true });
+            const entries = refreshModelSuggestions({ open: true });
+            setModelStatus(source.value === 'vertexai' ? '已刷新本地模型。联网更新目录需要 Full 服务账号，Express API Key 不支持此目录。'
+                : entries.length ? `已刷新 ${entries.length} 个内置或已保存模型；可选择，也可填写模型 ID。`
+                : '此来源没有可用的内置或已保存模型，请填写模型 ID。');
+            return;
+        }
         const revision = modelRevision;
         modelController = new AbortController();
         const controller = modelController;
-        modelPicker.clear();
+        refreshModelSuggestions();
         refreshModelLoading();
         try {
             const selectedSource = source.value;
-            if (!supportsModelDiscovery(selectedSource)) throw new Error('此来源暂不支持拉取模型，请手动填写模型 ID。');
             if (binding && !secret_state[binding.key]?.some(entry => entry.id === binding.id)) throw new Error('选择的密钥已删除，请重新选择。');
-            if (binding && !supportsRequestSecretId() && !secret_state[binding.key]?.some(entry => entry.id === binding.id && entry.active)) {
+            if (selectedSource !== 'vertexai' && binding && !supportsRequestSecretId() && !secret_state[binding.key]?.some(entry => entry.id === binding.id && entry.active)) {
                 throw new Error('当前酒馆版本只能用已激活的密钥拉取模型，请先切换到此密钥后重试。');
             }
             const request = { chat_completion_source: selectedSource, reverse_proxy: '', proxy_password: '' };
@@ -316,10 +364,13 @@ export async function editProfile(profile, { runtime, vault, models, parameterPr
                 Object.assign(request, { custom_url: apiRoot, custom_include_headers: headers,
                     custom_auth: { version: 1, auth, credential } });
             } else {
-                if (binding && binding.key !== sourceKey(selectedSource, initialFields)) throw new Error('密钥服务与 API 来源不同，请重新选择。');
+                if (binding && binding.key !== sourceKey(selectedSource, { ...initialFields, vertexai_auth_mode: vertexMode.value })) throw new Error('密钥服务与 API 来源不同，请重新选择。');
                 if (binding) request.secret_id = binding.id;
+                if (selectedSource === 'vertexai') Object.assign(request, { vertexai_auth_mode: vertexMode.value,
+                    vertexai_region: region.value.trim(), vertexai_express_project_id: project.value.trim() });
                 if (selectedSource === 'azure_openai') Object.assign(request, Object.fromEntries(Object.entries(azureFields).map(([key, input]) => [key, input.value.trim()])));
-                for (const key of ['siliconflow_endpoint', 'workers_ai_account_id', 'pollinations_endpoint']) if (initialFields[key] !== undefined) request[key] = initialFields[key];
+                Object.assign(request, Object.fromEntries(Object.entries(discoveryFields[selectedSource] ?? {}).map(([key, input]) => [key, input.value.trim()])));
+                if (selectedSource === 'workers_ai' && !request.workers_ai_account_id) throw new Error('请填写 Cloudflare 账号 ID。');
                 if (proxy.value !== 'none') {
                     const selectedProxy = resolveProfileProxy(proxy.value, proxies);
                     if (selectedProxy.mode === 'preset') {
@@ -332,8 +383,8 @@ export async function editProfile(profile, { runtime, vault, models, parameterPr
             const entries = await fetchModelList(request, { headers: getRequestHeaders(), signal: controller.signal });
             if (revision !== modelRevision || controller.signal.aborted) return;
             model.focus({ preventScroll: true });
-            modelPicker.setItems(entries, { open: true });
-            setModelStatus('');
+            refreshModelSuggestions({ open: true, fetched: entries });
+            setModelStatus(`已拉取 ${entries.length} 个模型。`);
         } catch (error) {
             if (controller.signal.aborted || revision !== modelRevision) return;
             const message = error?.message || '请求失败，请重试。';
@@ -352,9 +403,11 @@ export async function editProfile(profile, { runtime, vault, models, parameterPr
 
     function refreshModelLoading() {
         const loading = Boolean(modelController && !modelController.signal.aborted);
-        fetchModels.disabled = saving || deleting || detachingBinding || loading || !supportsModelDiscovery(source.value);
+        fetchModels.disabled = saving || deleting || detachingBinding || loading;
         fetchModels.setAttribute('aria-busy', String(loading));
         fetchModels.querySelector('i')?.classList.toggle('fa-spin', loading);
+        fetchModels.title = canFetchModels() ? '拉取模型' : '刷新内置和已保存模型';
+        fetchModels.setAttribute('aria-label', fetchModels.title);
     }
 
     function refreshSource() {
@@ -362,9 +415,11 @@ export async function editProfile(profile, { runtime, vault, models, parameterPr
         endpointField.hidden = source.value !== 'custom';
         vertexFields.hidden = source.value !== 'vertexai';
         azureContainer.hidden = source.value !== 'azure_openai';
+        for (const [key, container] of Object.entries(discoveryContainers)) container.hidden = source.value !== key;
         refreshModelLoading();
-        fetchModels.title = !supportsModelDiscovery(source.value) ? '此来源暂不支持拉取，请手动填写模型 ID' : '拉取模型';
         renderKey();
+        refreshModelSuggestions();
+        if (!canFetchModels()) setModelStatus('从内置或已保存模型中选择，也可填写模型 ID。');
         refreshProxyNote();
     }
     source.addEventListener('change', () => { binding = null; explicitlyNoKey = false; keyBeforeNone = null; refreshSource(); });
@@ -426,6 +481,7 @@ export async function editProfile(profile, { runtime, vault, models, parameterPr
                 delete updated['custom-connection']; delete updated['api-url'];
                 if (selectedSource === 'vertexai') Object.assign(fields, { vertexai_auth_mode: vertexMode.value, vertexai_region: region.value.trim(), vertexai_express_project_id: project.value.trim() });
                 if (selectedSource === 'azure_openai') Object.assign(fields, Object.fromEntries(Object.entries(azureFields).map(([key, input]) => [key, input.value.trim()])));
+                Object.assign(fields, Object.fromEntries(Object.entries(discoveryFields[selectedSource] ?? {}).map(([key, input]) => [key, input.value.trim()])));
             }
             updated[PROFILE_FIELD] = normalizeMetadata({ version: 1, source: selectedSource, model: updated.model, fields, proxy: selectedProxy, credential: binding });
             updated.exclude = (updated.exclude ?? []).filter(key => !['api', 'model', 'custom-connection', 'api-url', 'secret-id', 'proxy', 'prompt-post-processing'].includes(key));
@@ -471,7 +527,7 @@ export async function editProfile(profile, { runtime, vault, models, parameterPr
     remove.disabled = typeof onDelete !== 'function';
     root.append(element('h3', { text: creating ? '新建连接方案' : '编辑连接方案' }), controls, element('div', { class: 'cw-footer' }, [...(creating ? [] : [remove]), save]), status);
     controls.append(element('div', { class: 'cw-fields cw-profile-basics' }, [field('方案名称', name), field('API 来源', source)]),
-        endpointField, azureContainer, vertexFields,
+        endpointField, azureContainer, vertexFields, ...Object.values(discoveryContainers),
         modelField, keyRow, proxyField, optionalBindings, customContainer);
     refreshSource();
     refreshBindingButtons();

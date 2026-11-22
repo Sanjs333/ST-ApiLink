@@ -40,27 +40,16 @@ export async function confirmUnsavedProfileSwitch({ current = null, target = nul
     message.style.overflowWrap = 'anywhere';
     root.append(element('h3', { text: '切换前保存修改？' }), message);
     const customButtons = [
-        ...(current || draftName ? [{ text: current ? '保存原方案并切换' : '保存新方案并切换', result: POPUP_RESULT.CUSTOM1, classes: ['cw-popup-action'] }] : []),
-        { text: '另存为新方案并切换', result: POPUP_RESULT.CUSTOM2, classes: ['cw-popup-action'] },
-        { text: '不保存并切换', result: POPUP_RESULT.CUSTOM3, classes: ['cw-popup-action'] },
+        ...(current || draftName ? [{ text: '保存', tooltip: current ? '保存原方案并切换' : '保存新方案并切换', result: POPUP_RESULT.CUSTOM1, classes: ['cw-popup-action'] }] : []),
+        { text: '另存', tooltip: '另存为新方案并切换', result: POPUP_RESULT.CUSTOM2, classes: ['cw-popup-action'] },
+        { text: '不保存', tooltip: '不保存修改并切换', result: POPUP_RESULT.CUSTOM3, classes: ['cw-popup-action'] },
     ];
     const popup = new Popup(root, POPUP_TYPE.CONFIRM, '', {
         okButton: false, cancelButton: '取消', customButtons,
         defaultResult: POPUP_RESULT.NEGATIVE, allowEscapeClose: true,
     });
     popup.dlg.classList.add('cw-popup', 'cw-editor-popup', 'cw-unsaved-profile-popup');
-    if (popup.closeButton) popup.closeButton.style.display = 'block';
-    popup.dlg.style.setProperty('width', 'min(560px, calc(100dvw - 2em))', 'important');
-    // Long action labels stay readable on phones without changing other popup footers.
-    popup.buttonControls.style.display = 'grid';
-    popup.buttonControls.style.gridTemplateColumns = 'minmax(0, 1fr)';
-    popup.buttonControls.style.gap = '6px';
-    for (const control of popup.buttonControls.children) {
-        control.classList.add('cw-popup-action');
-        control.style.width = '100%';
-        control.style.boxSizing = 'border-box';
-        control.setAttribute('role', 'button');
-    }
+    for (const control of popup.buttonControls.children) control.setAttribute('aria-label', control.title || control.textContent.trim());
     const result = await showThemedPopup(popup);
     if (result === POPUP_RESULT.CUSTOM1 && (current || draftName)) return 'save';
     if (result === POPUP_RESULT.CUSTOM2) return 'save-as';

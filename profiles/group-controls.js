@@ -15,7 +15,7 @@ function defaultGroupName(profile) {
     return CUSTOM_MODEL_SOURCES[sourceOf(profile)]?.label ?? profile.name ?? '我的连接';
 }
 
-export function createProfileGroupControls({ runtime, onChange = () => {}, onEdit = async () => {},
+export function createProfileGroupControls({ runtime, models = null, onChange = () => {}, onEdit = async () => {},
     getSelectedIds = () => [], getMulti = () => false, getSearching = () => false, isBusy = () => false, onError = showError } = {}) {
     const collapsed = new Set();
     const headingControls = new Map();
@@ -122,15 +122,22 @@ export function createProfileGroupControls({ runtime, onChange = () => {}, onEdi
         const suggestions = new Map();
         for (const profile of members) if (profile.model) suggestions.set(profile.model, { id: profile.model, label: profile.model });
         const source = sourceOf(base);
-        const selector = CUSTOM_MODEL_SOURCES[source]?.selector ?? (source === 'custom' ? '#model_custom_select' : null);
+        const selector = CUSTOM_MODEL_SOURCES[source]?.selector
+            ?? (source === 'custom' ? '#model_custom_select' : source === 'azure_openai' ? '#azure_openai_model' : null);
         const selected = runtime.selected();
         // A relay's fetched list belongs to its active connection, unlike static provider options.
         const sameConnection = selected && (runtime.groupFor(selected)?.id === group.id
             || runtime.groupCandidates(base).some(profile => profile.id === selected.id));
         if (selector && (source !== 'custom' || sameConnection)) {
             for (const option of document.querySelector(selector)?.options ?? []) {
-                if (option.value && !option.disabled && !option.hidden) suggestions.set(option.value, { id: option.value, label: option.textContent.trim() });
+                if (option.value && !option.disabled && !option.hidden && !option.parentElement?.disabled && !option.parentElement?.hidden) {
+                    suggestions.set(option.value, { id: option.value, label: option.textContent.trim(),
+                        custom: option.hasAttribute('data-connection-workbench-models') });
+                }
             }
+        }
+        if (Object.hasOwn(CUSTOM_MODEL_SOURCES, source)) {
+            for (const entry of models?.list(source) ?? []) suggestions.set(entry.id, { ...entry, custom: true });
         }
         const modelField = field('模型', model, '地址、密钥和代理沿用此连接组。');
         const picker = installModelPicker(model);
