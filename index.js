@@ -467,7 +467,7 @@ export async function init() {
                         }
                     },
                 });
-        }, { emptyText: '没有匹配的连接方案' });
+        }, { emptyText: '没有匹配的连接方案', batchSize: 20 });
         function updateControls(changedRow) {
             const entries = visibleProfiles;
             const selected = selection.size;

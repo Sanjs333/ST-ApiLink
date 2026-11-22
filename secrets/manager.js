@@ -106,7 +106,6 @@ export function createSecretManager(runtime, onError = showError) {
 
     async function open({ onChoose = null, canChoose = () => true, isChosen = null, getChosen = () => runtime.currentCredential?.(), onNone = null, isNone = () => false, onRebind = null, allowedKeys = MANAGED_SECRET_KEYS, defaultKey = '', title = '管理 API 密钥' } = {}) {
         if (disposed) return;
-        await readSecretState();
         const root = element('div', { class: 'cw-dialog cw-manager' });
         const list = element('div', { class: 'cw-list' });
         const progress = element('div', { class: 'cw-progress cw-note', role: 'status' });
@@ -114,7 +113,8 @@ export function createSecretManager(runtime, onError = showError) {
         const hiddenSelectionNote = element('div', { class: 'cw-note cw-hidden-selection-note', hidden: true });
         const browseCount = element('span', { class: 'cw-note' });
         const selection = createSecretSelection();
-        const state = { stop: false, busy: false, scanning: false, closed: false, multi: false, controller: null };
+        const state = { stop: false, busy: true, scanning: false, closed: false, multi: false, controller: null };
+        let loading = true;
         sessions.add(state);
         let query = '';
         let duplicateGroups = [];
@@ -437,7 +437,7 @@ export function createSecretManager(runtime, onError = showError) {
                         }
                     },
                 });
-        }, { emptyText: '没有匹配的密钥', keyOf: tokenFor });
+        }, { emptyText: '没有匹配的密钥', keyOf: tokenFor, batchSize: 20 });
         function updateControls(changedRow) {
             const matches = visibleSecrets;
             const inView = selection.visibleCount;
@@ -492,7 +492,7 @@ export function createSecretManager(runtime, onError = showError) {
             for (const row of scroller.loadedRows()) row.cwRefreshState?.();
         }
         function render(reset = false) {
-            if (state.closed || disposed) return;
+            if (loading || state.closed || disposed) return;
             const entries = rows();
             visibleSecrets = filtered(entries);
             const all = new Set(), eligible = new Set();
@@ -514,12 +514,26 @@ export function createSecretManager(runtime, onError = showError) {
             element('div', { class: 'cw-search-row' }, [search, category]),
             element('div', { class: 'cw-search-row cw-management-filters' }, [referencesFilter, usageControls.sortButton]),
             usageControls.filterRow, bulkControls, hiddenSelectionNote, duplicateSummary, list, progress);
-        render();
+        progress.textContent = '正在读取密钥列表…';
+        updateControls();
         const updateNoneState = () => { if (!state.closed && !disposed) render(); };
         const stateEvents = [event_types.CUSTOM_CONNECTION_CHANGED, event_types.CHATCOMPLETION_SOURCE_CHANGED, event_types.CONNECTION_PROFILE_LOADED, event_types.CONNECTION_PROFILE_CREATED, event_types.CONNECTION_PROFILE_UPDATED, event_types.CONNECTION_PROFILE_DELETED, event_types.SECRET_WRITTEN, event_types.SECRET_DELETED, event_types.SECRET_EDITED, event_types.SECRET_ROTATED].filter(Boolean);
         for (const type of stateEvents) eventSource.on(type, updateNoneState);
         const unsubscribeUsage = runtime.usage?.subscribe(updateNoneState);
-        try { await dialog(root); } finally {
+        try {
+            const closed = dialog(root);
+            void readSecretState().then(() => {
+                if (state.closed || disposed) return;
+                loading = state.busy = false;
+                progress.textContent = '';
+                render();
+            }).catch(error => {
+                if (state.closed || disposed) return;
+                progress.textContent = '密钥列表加载失败，请关闭后重试。';
+                onError(error);
+            });
+            await closed;
+        } finally {
             state.closed = true; state.stop = true; state.controller?.abort(); discardDuplicates(); sessions.delete(state); scroller.cleanup();
             for (const type of stateEvents) eventSource.removeListener(type, updateNoneState);
             unsubscribeUsage?.();

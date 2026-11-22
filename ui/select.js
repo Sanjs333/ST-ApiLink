@@ -27,14 +27,18 @@ function colorLuminance(value) {
     }, 0);
 }
 
-function readableSurface(color, background, fallback, minimumAlpha = .88) {
-    let channels = colorChannels(background);
-    if (!channels || channels[3] === 0) channels = colorChannels(fallback);
-    if (!channels) return fallback;
+function hasVisibleColor(value) {
+    return Boolean(value) && value !== 'transparent' && colorChannels(value)?.[3] !== 0
+        && !/\/\s*0(?:\.0+)?%?\s*\)$/.test(value);
+}
+
+function readableSurface(color, backgrounds, minimumAlpha = .88) {
     const foreground = colorLuminance(color);
+    const contrasting = foreground !== null && foreground < .179 ? [255, 255, 255] : [0, 0, 0];
+    let channels = backgrounds.filter(hasVisibleColor).map(colorChannels).find(Boolean) ?? contrasting;
     const luminance = colorLuminance(`rgb(${channels.slice(0, 3).join(',')})`);
     if (foreground !== null && (Math.max(foreground, luminance) + .05) / (Math.min(foreground, luminance) + .05) < 4.5) {
-        channels = foreground < .18 ? [255, 255, 255] : [24, 24, 24];
+        channels = contrasting;
     }
     return `rgba(${channels.slice(0, 3).join(',')},${Math.max(channels[3] ?? 1, minimumAlpha)})`;
 }
@@ -81,10 +85,11 @@ export function syncPickerTheme(panel, control, { trigger, search } = {}) {
         };
         const variable = name => resolve(controlStyle.getPropertyValue(name).trim());
         const foreground = variable('--gr-panel-text') || drawerStyle.color || controlStyle.color;
-        const tint = variable('--SmartThemeBlurTintColor') || drawerStyle.backgroundColor;
-        const background = readableSurface(foreground, variable('--gr-panel-bg') || tint, drawerStyle.backgroundColor);
+        const background = readableSurface(foreground, [variable('--gr-panel-bg'), variable('--SmartThemeBlurTintColor'), drawerStyle.backgroundColor]);
         const inputColor = inputStyle.color || foreground;
         const selectColor = controlStyle.color || foreground;
+        // `background` can paint an image or gradient while leaving the color layer transparent.
+        const controlBackground = (color, fill) => hasVisibleColor(fill) ? fill : readableSurface(color, [background], 1);
         const hoverBackground = variable('--gr-hover-bg') || variable('--SmartThemeQuoteColor') || buttonStyle.backgroundColor || background;
         const selectedBackground = variable('--gr-selected-bg') || hoverBackground;
         const hoverColor = readableText(variable('--gr-primary-accent') || foreground, hoverBackground);
@@ -94,13 +99,13 @@ export function syncPickerTheme(panel, control, { trigger, search } = {}) {
             '--cw-picker-panel-bg': background,
             '--cw-picker-panel-border': variable('--gr-panel-border') || controlStyle.borderColor || drawerStyle.borderColor,
             '--cw-picker-input-fg': inputColor,
-            '--cw-picker-input-bg': inputStyle.backgroundColor || background,
+            '--cw-picker-input-bg': controlBackground(inputColor, inputStyle.backgroundColor),
             '--cw-picker-control-fg': selectColor,
-            '--cw-picker-control-bg': controlStyle.backgroundColor || background,
+            '--cw-picker-control-bg': controlBackground(selectColor, controlStyle.backgroundColor),
             '--cw-picker-hover-fg': hoverColor,
-            '--cw-picker-hover-bg': readableSurface(hoverColor, hoverBackground, background, 1),
+            '--cw-picker-hover-bg': readableSurface(hoverColor, [hoverBackground, background], 1),
             '--cw-picker-selected-fg': selectedColor,
-            '--cw-picker-selected-bg': readableSurface(selectedColor, selectedBackground, background, 1),
+            '--cw-picker-selected-bg': readableSurface(selectedColor, [selectedBackground, background], 1),
         };
         // Computed styles are live; finish reading before applying the copies.
         const appearances = {

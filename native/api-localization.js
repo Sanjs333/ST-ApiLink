@@ -1,4 +1,5 @@
 const API_LOCALE = {
+    'Not checked; use Test Message': '尚未检查连接，请使用“发送测试消息”验证。',
     'API': 'API 来源',
     'OpenAI-compatible': '兼容 OpenAI',
     'Other Providers': '其他服务商',

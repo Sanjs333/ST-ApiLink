@@ -106,7 +106,7 @@ export async function scanSecretFingerprints(entries, {
     const onAbort = () => controller.abort(signal.reason ?? new DOMException('The request was aborted.', 'AbortError'));
     signal?.addEventListener('abort', onAbort, { once: true });
     const output = new Array(candidates.length);
-    let snapshot, completed = 0;
+    let snapshot, completed = 0, pause = null, sliceStart = performance.now();
     const read = async (action, values = {}) => {
         const payload = await requestSecrets(action, values, controller.signal);
         if (controller.signal.aborted) { clearSecretValues(payload); abortIfNeeded(controller.signal); }
@@ -124,7 +124,10 @@ export async function scanSecretFingerprints(entries, {
         completed++;
         if (candidates.length <= 100 || completed % 100 === 0 || completed === candidates.length) onProgress({ completed, total: candidates.length });
         abortIfNeeded(controller.signal);
-        if (completed % 100 === 0) { await yieldImpl(); abortIfNeeded(controller.signal); }
+        if (!pause && (completed % 100 === 0 || performance.now() - sliceStart >= 12)) {
+            pause = Promise.resolve().then(yieldImpl).finally(() => { sliceStart = performance.now(); pause = null; });
+        }
+        if (pause) { await pause; abortIfNeeded(controller.signal); }
     };
     try {
         const settings = await read('settings');

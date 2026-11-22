@@ -53,7 +53,7 @@ select.cw-picker-native.select2-hidden-accessible {
     padding: .4em;
     text-align: left;
     border: 1px solid var(--gr-panel-border, var(--SmartThemeBorderColor, #666));
-    border-radius: 12px;
+    border-radius: 3px;
     color: var(--gr-panel-text, var(--SmartThemeBodyColor, #eee));
     background: var(--gr-panel-bg, var(--SmartThemeBlurTintColor, #222));
     backdrop-filter: blur(20px);
@@ -176,7 +176,6 @@ select.cw-picker-native.select2-hidden-accessible {
 .cw-model-picker-panel .cw-picker-results { max-height: inherit; }
 .cw-model-picker-styled {
     border-color: var(--gr-panel-border, var(--SmartThemeBorderColor, #666));
-    border-radius: 12px;
     color: var(--gr-panel-text, var(--SmartThemeBodyColor, #eee));
     background: var(--gr-panel-bg, var(--SmartThemeBlurTintColor, #222));
     backdrop-filter: blur(4px);
@@ -186,7 +185,6 @@ select.cw-picker-native.select2-hidden-accessible {
     --cw-option-inset: 14px;
     height: auto;
     padding: 10px 14px;
-    border-radius: 8px;
     color: var(--gr-panel-text, var(--SmartThemeBodyColor, #eee));
     font-weight: 500;
     line-height: 1.4;
@@ -473,7 +471,7 @@ select.cw-picker-native.select2-hidden-accessible {
 #update_connection_profile.cw-save-unselected-profile[aria-disabled="false"] { filter: none; opacity: 1; cursor: pointer; pointer-events: auto; }
 .cw-managed-create-profile { display: none !important; }
 @media (max-width: 1000px) {
-    .flex-container.cw-profile-toolbar { flex-wrap: wrap; }
+    .flex-container.cw-profile-toolbar { flex-wrap: wrap; justify-content: flex-end; }
     .cw-profile-toolbar > #connection_profiles:not(.cw-picker-native),
     .cw-profile-toolbar > .cw-picker {
         box-sizing: border-box;
