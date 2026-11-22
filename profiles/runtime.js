@@ -1062,7 +1062,10 @@ export function createProfileRuntime({ models, onError = console.error, onChange
             for (const [id, slot] of Object.entries(nextState?.drafts ?? {})) migrateSlot(slot, ['drafts', id]);
             const previousPending = credentialBeforeNone;
             const pendingCredential = migrateCredential(previousPending?.credential);
-            if (!changes.length && !stateChanges.length && !pendingCredential) { usage.mergeSecret(from, to); return { profiles: 0, current: false }; }
+            if (!changes.length && !stateChanges.length && !pendingCredential) {
+                usage.mergeSecret(from, to);
+                return { profiles: 0, current: false, requiresReverification: false };
+            }
             for (const change of changes) replace(change.profile, change.next);
             if (stateChanges.length) oai_settings.custom_provider_state = nextState;
             if (pendingCredential) credentialBeforeNone = { ...previousPending, credential: pendingCredential };

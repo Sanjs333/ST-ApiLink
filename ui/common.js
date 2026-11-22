@@ -17,7 +17,7 @@ const BUTTON_ICONS = {
     '最近使用优先': 'fa-arrow-down-wide-short', '最近加载优先': 'fa-arrow-down-wide-short',
     '拉取模型': 'fa-arrows-rotate',
     '编辑反向代理': 'fa-pen',
-    '识别重复密钥': 'fa-magnifying-glass', '停止识别': 'fa-stop', '合并重复密钥': 'fa-object-group', '停止合并': 'fa-stop',
+    '识别重复密钥': 'fa-magnifying-glass', '停止识别': 'fa-stop', '合并重复密钥': 'fa-object-group', '停止合并': 'fa-pause',
     '按方案名重命名': 'fa-wand-magic-sparkles',
     '按方案名批量重命名': 'fa-wand-magic-sparkles',
 };
@@ -35,14 +35,17 @@ export function element(tag, props = {}, children = []) {
     return node;
 }
 
-export function button(text, action, className = '', { textOnly = false, showLabel = false } = {}) {
+export function button(text, action, className = '', { textOnly = false, showLabel = false, autoDisable = true } = {}) {
     const icon = textOnly ? null : BUTTON_ICONS[text];
     const glyph = typeof icon === 'string' ? icon : icon?.icon;
     return element('button', { type: 'button', class: 'menu_button ' + className + (icon && !showLabel ? ' cw-icon-button' : ''), title: text, 'aria-label': text, ...(icon ? {} : { text }), onclick: async event => {
         const target = event.currentTarget;
         if (target.disabled) return;
-        target.disabled = true;
-        try { await action(); } finally { target.disabled = false; target.dispatchEvent(new CustomEvent('cw-action-settled', { bubbles: true })); }
+        if (autoDisable) target.disabled = true;
+        try { await action(); } finally {
+            if (autoDisable) target.disabled = false;
+            target.dispatchEvent(new CustomEvent('cw-action-settled', { bubbles: true }));
+        }
     } }, icon ? [element('i', { class: 'fa-solid ' + glyph, 'aria-hidden': 'true' }), ...(icon.badge ? [element('i', { class: 'fa-solid cw-icon-badge ' + icon.badge, 'aria-hidden': 'true' })] : []), ...(showLabel ? [element('span', { text })] : [])] : []);
 }
 

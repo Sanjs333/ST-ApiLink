@@ -51,7 +51,7 @@ export async function mergeDuplicateSecrets({
     shouldStop = () => false, onProgress = () => {},
 }) {
     if (typeof verifyDuplicate !== 'function') throw new Error('合并前需要重新核对完整密钥。');
-    const result = { deleted: 0, failed: 0, retained: 0, migrated: 0, stopped: false, deletedEntries: [], errors: [] };
+    const result = { deleted: 0, failed: 0, retained: 0, migrated: 0, stopped: false, interruption: null, deletedEntries: [], errors: [] };
     const planned = groups.flatMap(group => group.duplicates.map(entry => ({ from: publicEntry(entry), to: publicEntry(group.keep) })));
     const seen = new Set();
     const exists = entry => getVault()[entry.key]?.some(record => record.id === entry.id);
@@ -80,12 +80,14 @@ export async function mergeDuplicateSecrets({
             if (shouldStop()) break;
             if (!exists(to)) { result.retained++; continue; }
             if (!exists(from)) continue;
-            // Persistence can await network I/O; a pair may have changed since the initial check.
-            phase = 'verify';
-            if (!await verifyDuplicate(from, to)) { result.retained++; continue; }
-            if (shouldStop()) break;
-            if (!exists(to)) { result.retained++; continue; }
-            if (!exists(from)) continue;
+            // Only skip the second read when the rebinder explicitly confirms it did no persistence.
+            if (migration?.requiresReverification !== false) {
+                phase = 'verify';
+                if (!await verifyDuplicate(from, to)) { result.retained++; continue; }
+                if (shouldStop()) break;
+                if (!exists(to)) { result.retained++; continue; }
+                if (!exists(from)) continue;
+            }
             phase = 'delete';
             onProgress({ phase, index: index + 1, total: planned.length, from, keep: to });
             if (shouldStop()) break;
@@ -100,12 +102,17 @@ export async function mergeDuplicateSecrets({
             if (exists(from)) throw new Error('密钥未能删除。');
             result.deleted++;
             result.deletedEntries.push(from);
-        } catch {
+        } catch (error) {
+            if (phase === 'verify' && shouldStop()) break;
             result.failed++;
             // Keep diagnostic identifiers only; error messages may contain secret values from a provider.
             result.errors.push({ key: from.key, id: from.id, phase });
+            if (error?.type === 'network' || error?.type === 'timeout') {
+                result.interruption = error.type;
+                break;
+            }
         }
     }
-    result.stopped = Boolean(shouldStop());
+    result.stopped = Boolean(result.interruption || shouldStop());
     return result;
 }

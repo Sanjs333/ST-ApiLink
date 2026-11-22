@@ -28,7 +28,10 @@ export function createSecretManager(runtime, onError = showError) {
     let disposed = false;
 
     async function mutate(action, values) {
-        const response = await fetch('/api/secrets/' + action, { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify(values) });
+        const options = { method: 'POST', headers: getRequestHeaders(), body: JSON.stringify(values) };
+        const response = await fetch('/api/secrets/' + action, options).catch(() => {
+            throw Object.assign(new Error('无法连接酒馆的密钥接口，请检查连接后重试。'), { type: 'network' });
+        });
         if (!response.ok) throw new Error('密钥操作失败，请重试。');
     }
 
@@ -38,10 +41,9 @@ export function createSecretManager(runtime, onError = showError) {
 
     async function fingerprint(entry, signal) {
         const data = await inspectSecret('find', { key: entry.key, id: entry.id }, signal);
-        if (typeof data.value !== 'string' || !data.value) throw new Error('密钥已不存在或无法读取，请重新识别。');
-        const digest = await sha256(data.value);
-        data.value = '';
-        return digest;
+        if (typeof data?.value !== 'string' || !data.value) throw new Error('密钥已不存在或无法读取，请重新识别。');
+        try { return await sha256(data.value); }
+        finally { data.value = ''; }
     }
 
     async function add(defaultKey = SECRET_KEYS.CUSTOM, allowedKeys = MANAGED_SECRET_KEYS) {
@@ -113,7 +115,7 @@ export function createSecretManager(runtime, onError = showError) {
         const hiddenSelectionNote = element('div', { class: 'cw-note cw-hidden-selection-note', hidden: true });
         const browseCount = element('span', { class: 'cw-note' });
         const selection = createSecretSelection();
-        const state = { stop: false, busy: true, scanning: false, closed: false, multi: false, controller: null };
+        const state = { stop: false, busy: true, scanning: false, merging: false, closed: false, multi: false, controller: null };
         let loading = true;
         sessions.add(state);
         let query = '';
@@ -254,10 +256,10 @@ export function createSecretManager(runtime, onError = showError) {
             }
         }));
         const mergeDuplicates = button('合并重复密钥', guarded(async () => {
-            if (state.busy && duplicateGroups.length) { state.stop = true; state.controller?.abort(); updateControls(); return; }
+            if (state.merging) { state.stop = true; state.controller?.abort(); return; }
             if (!duplicateGroups.length || state.busy) return;
             const groups = structuredClone(duplicateGroups);
-            state.busy = true; state.stop = false; updateControls();
+            state.busy = true; state.merging = true; state.stop = false; updateControls();
             const affected = new Set();
             try {
                 await readSecretState();
@@ -274,6 +276,7 @@ export function createSecretManager(runtime, onError = showError) {
                 ]);
                 if (await callGenericPopup(confirmation, POPUP_TYPE.CONFIRM, '', themedPopupOptions({ wide: true, okButton: '合并', cancelButton: '取消' })) !== POPUP_RESULT.AFFIRMATIVE || cancelled()) return;
                 updateControls();
+                let nextProgressUpdate = 0;
                 const result = await mergeDuplicateSecrets({
                     groups, getProfiles: runtime.profiles, getVault: () => secret_state, resolveSourceKey: sourceKey,
                     shouldStop: cancelled,
@@ -304,18 +307,27 @@ export function createSecretManager(runtime, onError = showError) {
                         if (secret_state[key]?.some(entry => entry.id === id)) throw new Error('密钥未能删除，请重新识别后重试。');
                         selection.delete(tokenFor({ key, id })); affected.add(key);
                     },
-                    onProgress: ({ index, total }) => { progress.textContent = `正在合并 ${index} / ${total}…`; },
+                    onProgress: ({ phase, index, total }) => {
+                        const now = performance.now();
+                        if (phase !== 'verify' || now < nextProgressUpdate) return;
+                        nextProgressUpdate = now + 150;
+                        progress.textContent = `正在合并 ${index} / ${total}…`;
+                    },
                 });
                 discardDuplicates();
-                progress.textContent = `已合并删除 ${result.deleted} 把重复密钥，${result.migrated} 个方案改绑` + (result.failed ? `，${result.failed} 把失败，已保留` : '')
+                progress.textContent = `已合并删除 ${result.deleted} 把重复密钥，${result.migrated} 个方案改绑` + (result.failed ? `，${result.failed} 把未能确认合并` : '')
                     + (result.retained ? `，${result.retained} 把因状态变化保留` : '') + (result.stopped ? '，已停止' : '');
+                if (result.interruption) {
+                    progress.textContent += (result.interruption === 'timeout' ? '。密钥核对请求超时' : '。与酒馆的连接已中断')
+                        + '，请恢复连接后重新识别剩余重复项。';
+                }
                 if (result.errors.some(error => error.phase === 'references')) progress.textContent += '。方案或连接改绑未确认保存，请检查连接后重试。';
             } finally {
-                state.busy = false; state.controller = null;
+                state.merging = false; state.busy = false; state.controller = null;
                 for (const key of affected) await eventSource.emit(event_types.SECRET_DELETED, key);
                 render();
             }
-        }));
+        }), '', { autoDisable: false });
         const duplicateSummary = element('div', { class: 'cw-dedup-summary', hidden: true }, [duplicateText, mergeDuplicates]);
         let nonePending = false;
         const noKey = onNone ? button('不使用密钥', guarded(async () => {
@@ -465,11 +477,11 @@ export function createSecretManager(runtime, onError = showError) {
             addKey.disabled = scanDuplicates.disabled = search.disabled = category.disabled = referencesFilter.disabled = state.busy;
             usageControls.setDisabled(state.busy);
             stopScan.hidden = !state.scanning;
-            mergeDuplicates.disabled = !duplicateGroups.length;
-            const stoppingMerge = state.busy && duplicateGroups.length;
+            const stoppingMerge = state.merging;
+            mergeDuplicates.disabled = !stoppingMerge && (state.busy || !duplicateGroups.length);
             mergeDuplicates.title = stoppingMerge ? '停止合并' : '合并重复密钥';
             mergeDuplicates.setAttribute('aria-label', mergeDuplicates.title);
-            mergeDuplicates.querySelector('i').className = 'fa-solid ' + (stoppingMerge ? 'fa-stop' : 'fa-object-group');
+            mergeDuplicates.querySelector('i').className = 'fa-solid ' + (stoppingMerge ? 'fa-pause' : 'fa-object-group');
             if (noKey) {
                 const enabled = Boolean(isNone());
                 noKey.disabled = state.busy || nonePending;
