@@ -73,3 +73,74 @@ test('does not count a cancelled verification as a failure', async () => {
     assert.equal(result.failed, 0);
     assert.equal(calls.remove, 0);
 });
+
+function batchFixture(size) {
+    const { options, calls, vault, keep, duplicates } = fixture(size);
+    const stored = new Set(vault[key]);
+    const batches = [];
+    options.removeKey = async (_key, id) => {
+        calls.remove++;
+        stored.delete(duplicates.find(entry => entry.id === id));
+    };
+    options.confirmDeletes = async batch => {
+        batches.push(batch.length);
+        vault[key] = [...stored];
+    };
+    return { options, calls, keep, duplicates, stored, batches };
+}
+
+test('confirms normal deletes in batches of 20 and flushes the tail', async () => {
+    const { options, batches, calls, keep, stored } = batchFixture(45);
+    const result = await mergeDuplicateSecrets(options);
+    assert.deepEqual(batches, [20, 20, 5]);
+    assert.deepEqual(calls, { verify: 45, remove: 45 });
+    assert.equal(result.deleted, 45);
+    assert.deepEqual([...stored], [keep]);
+});
+
+test('confirms an active-key switch or saved rebinding before continuing', async () => {
+    const { options, batches, duplicates } = batchFixture(4);
+    const remove = options.removeKey;
+    options.removeKey = async (service, id) => {
+        await remove(service, id);
+        return { confirmImmediately: id === duplicates[1].id };
+    };
+    const rebind = options.rebindReferences;
+    options.rebindReferences = async from => from.id === duplicates[2].id ? { profiles: 1 } : rebind();
+    const result = await mergeDuplicateSecrets(options);
+    assert.deepEqual(batches, [2, 1, 1]);
+    assert.equal(result.deleted, 4);
+});
+
+test('manual stop still checks the pending deletes', async () => {
+    const { options, calls, batches } = batchFixture(5);
+    options.shouldStop = () => calls.remove === 2;
+    const result = await mergeDuplicateSecrets(options);
+    assert.deepEqual(batches, [2]);
+    assert.equal(result.deleted, 2);
+    assert.equal(result.stopped, true);
+});
+
+test('stops sending deletes when the batch cannot be confirmed', async () => {
+    const { options, calls } = batchFixture(5);
+    options.batchSize = 2;
+    options.confirmDeletes = async () => { throw new Error('read failed'); };
+    const result = await mergeDuplicateSecrets(options);
+    assert.equal(calls.remove, 2);
+    assert.equal(result.interruption, 'confirmation');
+    assert.equal(result.unconfirmed, 2);
+    assert.equal(result.deleted, 0);
+});
+
+test('reconciles a delete whose response was lost without sending more deletes', async () => {
+    const { options, calls, batches } = batchFixture(5);
+    const remove = options.removeKey;
+    options.removeKey = async (...args) => {
+        await remove(...args);
+        if (calls.remove === 2) throw Object.assign(new Error('connection lost'), { type: 'network', deleteMayHaveRun: true });
+    };
+    const result = await mergeDuplicateSecrets(options);
+    assert.deepEqual(batches, [2]);
+    assert.equal(result.deleted, 2);
+    assert.equal(result.interruption, 'network');
+});

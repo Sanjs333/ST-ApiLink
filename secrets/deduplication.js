@@ -48,13 +48,32 @@ export function rebindProfileSecret(profile, from, to, resolveSourceKey) {
 /** Persist replacement references before deleting, and recheck each approved pair against current state. */
 export async function mergeDuplicateSecrets({
     groups, getProfiles, getVault, resolveSourceKey, rebindReferences, removeKey, verifyDuplicate,
-    shouldStop = () => false, onProgress = () => {},
+    confirmDeletes, batchSize = 20, shouldStop = () => false, onProgress = () => {},
 }) {
     if (typeof verifyDuplicate !== 'function') throw new Error('合并前需要重新核对完整密钥。');
-    const result = { deleted: 0, failed: 0, retained: 0, migrated: 0, stopped: false, interruption: null, deletedEntries: [], errors: [] };
+    const result = { deleted: 0, failed: 0, unconfirmed: 0, retained: 0, migrated: 0, stopped: false, interruption: null, deletedEntries: [], errors: [] };
     const planned = groups.flatMap(group => group.duplicates.map(entry => ({ from: publicEntry(entry), to: publicEntry(group.keep) })));
     const seen = new Set();
     const exists = entry => getVault()[entry.key]?.some(record => record.id === entry.id);
+    const pending = [];
+    const confirmed = entry => { result.deleted++; result.deletedEntries.push(entry); };
+    const flush = async () => {
+        if (!pending.length) return true;
+        const batch = pending.splice(0);
+        try { await confirmDeletes(batch); }
+        catch {
+            result.unconfirmed += batch.length;
+            result.interruption ??= 'confirmation';
+            return false;
+        }
+        for (const entry of batch) {
+            if (exists(entry)) {
+                result.failed++;
+                result.errors.push({ key: entry.key, id: entry.id, phase: 'delete' });
+            } else confirmed(entry);
+        }
+        return true;
+    };
     for (let index = 0; index < planned.length; index++) {
         if (shouldStop()) break;
         const { from, to } = planned[index];
@@ -64,7 +83,7 @@ export async function mergeDuplicateSecrets({
         seen.add(token);
         if (!exists(from)) continue;
         if (!exists(to)) { result.retained++; continue; }
-        onProgress({ phase: 'verify', index: index + 1, total: planned.length, from, keep: to });
+        onProgress({ phase: 'verify', index: index + 1, total: planned.length, from, keep: to, confirmed: result.deleted });
         if (shouldStop()) break;
         let phase = 'verify';
         try {
@@ -73,7 +92,7 @@ export async function mergeDuplicateSecrets({
             if (!exists(from)) continue;
             if (!exists(to)) { result.retained++; continue; }
             phase = 'references';
-            onProgress({ phase, index: index + 1, total: planned.length, from, keep: to });
+                onProgress({ phase, index: index + 1, total: planned.length, from, keep: to, confirmed: result.deleted });
             if (shouldStop()) break;
             const migration = await rebindReferences(from, to);
             result.migrated += Number.isFinite(migration?.profiles) ? Math.max(0, migration.profiles) : 0;
@@ -98,21 +117,34 @@ export async function mergeDuplicateSecrets({
                 result.errors.push({ key: from.key, id: from.id, phase: 'references' });
                 continue;
             }
-            await removeKey(from.key, from.id);
-            if (exists(from)) throw new Error('密钥未能删除。');
-            result.deleted++;
-            result.deletedEntries.push(from);
+            const removal = await removeKey(from.key, from.id, to);
+            if (removal?.skipped && shouldStop()) break;
+            if (confirmDeletes) {
+                pending.push(from);
+                if (removal?.confirmImmediately || migration?.requiresReverification !== false || pending.length >= batchSize) {
+                    if (!await flush()) break;
+                }
+            } else {
+                if (exists(from)) throw new Error('密钥未能删除。');
+                confirmed(from);
+            }
         } catch (error) {
             if (phase === 'verify' && shouldStop()) break;
+            if (confirmDeletes && phase === 'delete' && error?.deleteMayHaveRun) {
+                pending.push(from);
+                result.interruption = error.type;
+                break;
+            }
             result.failed++;
             // Keep diagnostic identifiers only; error messages may contain secret values from a provider.
             result.errors.push({ key: from.key, id: from.id, phase });
-            if (error?.type === 'network' || error?.type === 'timeout') {
+            if (['network', 'timeout', 'confirmation'].includes(error?.type)) {
                 result.interruption = error.type;
                 break;
             }
         }
     }
+    await flush();
     result.stopped = Boolean(result.interruption || shouldStop());
     return result;
 }

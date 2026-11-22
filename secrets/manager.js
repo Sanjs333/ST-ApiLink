@@ -276,6 +276,16 @@ export function createSecretManager(runtime, onError = showError) {
                 ]);
                 if (await callGenericPopup(confirmation, POPUP_TYPE.CONFIRM, '', themedPopupOptions({ wide: true, okButton: '合并', cancelButton: '取消' })) !== POPUP_RESULT.AFFIRMATIVE || cancelled()) return;
                 updateControls();
+                const refreshMergeVault = async keys => {
+                    const previous = secret_state;
+                    await readSecretState();
+                    if (!secret_state || secret_state === previous || keys.some(key => !Object.hasOwn(secret_state, key)
+                        || (secret_state[key] !== null && !Array.isArray(secret_state[key])))) {
+                        throw Object.assign(new Error('无法刷新密钥列表。'), { type: 'confirmation' });
+                    }
+                };
+                progress.textContent = '正在刷新密钥列表…';
+                await refreshMergeVault(groups.map(group => group.keep.key));
                 let nextProgressUpdate = 0;
                 const result = await mergeDuplicateSecrets({
                     groups, getProfiles: runtime.profiles, getVault: () => secret_state, resolveSourceKey: sourceKey,
@@ -292,34 +302,43 @@ export function createSecretManager(runtime, onError = showError) {
                         await onRebind?.(from, to);
                         return migration;
                     },
-                    removeKey: async (key, id) => {
-                        if (secret_state[key]?.some(entry => entry.id === id && entry.active)) {
-                            const keep = groups.find(group => group.duplicates.some(entry => entry.key === key && entry.id === id))?.keep;
-                            if (!keep || !secret_state[key]?.some(entry => entry.id === keep.id)) throw new Error('保留的密钥已不存在，请重新识别。');
+                    removeKey: async (key, id, keep) => {
+                        const active = secret_state[key]?.find(entry => entry.active);
+                        if (active?.id === id) {
+                            if (!secret_state[key]?.some(entry => entry.id === keep.id)) throw new Error('保留的密钥已不存在，请重新识别。');
                             await mutate('rotate', { key, id: keep.id });
-                            await readSecretState();
+                            await refreshMergeVault([key]);
                             if (!secret_state[key]?.some(entry => entry.id === keep.id && entry.active)) throw new Error('未能保留当前启用的密钥，请重试。');
                             await eventSource.emit(event_types.SECRET_ROTATED, key);
                             if (!secret_state[key]?.some(entry => entry.id === keep.id) || referencingProfiles(runtime.profiles(), key, id, sourceKey).length) throw new Error('密钥引用已变更，请重新识别。');
                         }
-                        await mutate('delete', { key, id });
-                        await readSecretState();
-                        if (secret_state[key]?.some(entry => entry.id === id)) throw new Error('密钥未能删除，请重新识别后重试。');
-                        selection.delete(tokenFor({ key, id })); affected.add(key);
+                        if (cancelled()) return { skipped: true };
+                        try { await mutate('delete', { key, id }); }
+                        catch (error) {
+                            if (error?.type === 'network') error.deleteMayHaveRun = true;
+                            throw error;
+                        }
+                        return { confirmImmediately: !active || active.id === id };
                     },
-                    onProgress: ({ phase, index, total }) => {
+                    confirmDeletes: batch => refreshMergeVault([...new Set(batch.map(entry => entry.key))]),
+                    onProgress: ({ phase, index, total, confirmed }) => {
                         const now = performance.now();
                         if (phase !== 'verify' || now < nextProgressUpdate) return;
                         nextProgressUpdate = now + 150;
-                        progress.textContent = `正在合并 ${index} / ${total}…`;
+                        progress.textContent = `正在合并 ${index} / ${total} · 已确认删除 ${confirmed} 把`;
                     },
                 });
+                for (const entry of result.deletedEntries) {
+                    selection.delete(tokenFor(entry));
+                    affected.add(entry.key);
+                }
                 discardDuplicates();
                 progress.textContent = `已合并删除 ${result.deleted} 把重复密钥，${result.migrated} 个方案改绑` + (result.failed ? `，${result.failed} 把未能确认合并` : '')
+                    + (result.unconfirmed ? `，${result.unconfirmed} 把已尝试删除，结果待确认` : '')
                     + (result.retained ? `，${result.retained} 把因状态变化保留` : '') + (result.stopped ? '，已停止' : '');
                 if (result.interruption) {
-                    progress.textContent += (result.interruption === 'timeout' ? '。密钥核对请求超时' : '。与酒馆的连接已中断')
-                        + '，请恢复连接后重新识别剩余重复项。';
+                    const reason = { timeout: '密钥核对请求超时', network: '与酒馆的连接已中断', confirmation: '无法刷新密钥列表' };
+                    progress.textContent += `。${reason[result.interruption]}，请恢复连接后重新识别剩余重复项。`;
                 }
                 if (result.errors.some(error => error.phase === 'references')) progress.textContent += '。方案或连接改绑未确认保存，请检查连接后重试。';
             } finally {
