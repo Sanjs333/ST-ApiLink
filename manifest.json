@@ -1,0 +1,17 @@
+{
+    "display_name": "API链接管理",
+    "minimum_client_version": "1.13.4",
+    "loading_order": 110,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "SillyTavern user extension",
+    "version": "1.0",
+    "hooks": {
+        "activate": "init",
+        "enable": "init",
+        "disable": "cleanup",
+        "delete": "cleanup"
+    }
+}
