@@ -167,7 +167,7 @@ function installPopupTheme(popup) {
     const documentRef = root.ownerDocument;
     const windowRef = documentRef.defaultView;
     root.classList.add('cw-themed-popup');
-    let timer = null, stopped = false, theme = null, themeChanged = true;
+    let timer = null, frame = null, stopped = false, theme = null, themeChanged = true;
     const dirtyControls = new Set();
     const sync = () => {
         if (stopped) return;
@@ -179,6 +179,10 @@ function installPopupTheme(popup) {
     const schedule = () => {
         if (stopped || timer !== null) return;
         timer = windowRef.setTimeout(() => { timer = null; sync(); }, 80);
+    };
+    const scheduleInitialSync = () => {
+        if (stopped || frame !== null) return;
+        frame = windowRef.requestAnimationFrame(() => { frame = null; sync(); });
     };
     const themeObserver = new windowRef.MutationObserver(() => { themeChanged = true; schedule(); });
     themeObserver.observe(documentRef.documentElement, { attributes: true, attributeFilter: ['style', 'class'] });
@@ -202,6 +206,7 @@ function installPopupTheme(popup) {
         if (stopped) return;
         stopped = true;
         if (timer !== null) windowRef.clearTimeout(timer);
+        if (frame !== null) windowRef.cancelAnimationFrame(frame);
         themeObserver.disconnect();
         controlsObserver.disconnect();
         dirtyControls.clear();
@@ -209,7 +214,7 @@ function installPopupTheme(popup) {
         popupThemes.delete(popup);
     };
     popupThemes.set(popup, dispose);
-    sync();
+    scheduleInitialSync();
     controlsObserver.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'disabled'] });
     root.addEventListener('close', dispose, { once: true });
     return dispose;

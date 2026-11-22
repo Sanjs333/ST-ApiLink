@@ -40,7 +40,7 @@ function modelEntry(id, label = id) {
     if (typeof id !== 'string' || !id.trim() || id.length > 512 || /[\x00-\x1f\x7f]/u.test(id)) {
         throw new Error('请输入有效的模型 ID（最多 512 个字符）。');
     }
-    if (typeof label !== 'string' || label.length > 256 || /[\x00-\x1f\x7f]/u.test(label)) {
+    if (typeof label !== 'string' || (label !== id && label.length > 256) || /[\x00-\x1f\x7f]/u.test(label)) {
         throw new Error('模型显示名称最多 256 个字符，不能包含控制字符。');
     }
     return { id: id.trim(), label: label.trim() || id.trim() };

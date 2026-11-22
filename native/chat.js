@@ -1,4 +1,5 @@
 import { eventSource } from '../../../../../script.js';
+import { touchesSelector } from './mutations.js';
 import { event_types } from '../compat/events.js';
 import { SECRET_KEYS, secret_state } from '../../../../secrets.js';
 import { proxies } from '../../../../openai.js';
@@ -157,8 +158,9 @@ export function installNativeChatUi({ root = document, onError = showError } = {
         timer = windowRef.setTimeout(() => { timer = null; refresh(); }, 0);
     };
     const observer = new windowRef.MutationObserver(records => {
+        if (stopped || timer !== null) return;
         const selector = '#openai_proxy_preset, #vertexai_full_config, #vertexai_service_account_status, #vertexai_service_account_info, #vertexai_region';
-        if (records.some(record => record.target.closest?.(selector) || [...record.addedNodes, ...record.removedNodes].some(node => node.nodeType === 1 && (node.matches(selector) || node.querySelector(selector))))) schedule();
+        if (records.some(record => touchesSelector(record, selector, true))) schedule();
     });
     observer.observe(root.querySelector('#rm_api_block') ?? (root.nodeType === 9 ? root.body : root), { childList: true, subtree: true, characterData: true });
     const events = [event_types.SECRET_WRITTEN, event_types.SECRET_DELETED, event_types.SECRET_ROTATED, event_types.SECRET_EDITED, event_types.CHATCOMPLETION_SOURCE_CHANGED, event_types.CONNECTION_PROFILE_LOADED].filter(Boolean);

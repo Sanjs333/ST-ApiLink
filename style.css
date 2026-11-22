@@ -310,6 +310,27 @@ select.cw-picker-native.select2-hidden-accessible {
 .cw-popup.popup.cw-editor-popup:has(.cw-new-connection, .cw-group-model-editor, .cw-group-editor, .cw-secret-editor, .cw-proxy-manager) {
     width: min(560px, calc(100dvw - 2em)) !important;
 }
+@media (max-width: 768px) {
+    .cw-popup.popup:has(.cw-manager, .cw-profile-editor, .cw-group-manager, .cw-group-model-editor, .cw-proxy-manager, .cw-parameter-preset-editor) {
+        position: fixed !important;
+        inset: 0 !important;
+        box-sizing: border-box !important;
+        width: 100dvw !important;
+        height: 100dvh !important;
+        max-width: none !important;
+        max-height: none !important;
+        min-width: 0 !important;
+        min-height: 0 !important;
+        margin: 0 !important;
+        padding: max(10px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left)) !important;
+        border-radius: 0 !important;
+        transform: none !important;
+    }
+    .cw-popup.popup:has(.cw-manager, .cw-profile-editor, .cw-group-manager, .cw-group-model-editor, .cw-proxy-manager, .cw-parameter-preset-editor) .popup-body,
+    .cw-popup.popup:has(.cw-manager, .cw-profile-editor, .cw-group-manager, .cw-group-model-editor, .cw-proxy-manager, .cw-parameter-preset-editor) .popup-content { flex: 1 1 0; min-height: 0; }
+    .cw-popup.popup:has(.cw-profile-editor, .cw-group-manager, .cw-group-model-editor, .cw-proxy-manager, .cw-parameter-preset-editor) .cw-editor,
+    .cw-popup.popup:has(.cw-profile-editor, .cw-group-manager, .cw-group-model-editor, .cw-proxy-manager, .cw-parameter-preset-editor) .cw-editor > .cw-fields { flex: 1 1 0; min-height: 0; }
+}
 @media (min-width: 769px) and (hover: hover) and (pointer: fine) {
     .cw-popup.popup {
         box-sizing: border-box;
@@ -451,6 +472,16 @@ select.cw-picker-native.select2-hidden-accessible {
 .cw-profile-new[hidden] { display: none !important; }
 #update_connection_profile.cw-save-unselected-profile[aria-disabled="false"] { filter: none; opacity: 1; cursor: pointer; pointer-events: auto; }
 .cw-managed-create-profile { display: none !important; }
+@media (max-width: 1000px) {
+    .flex-container.cw-profile-toolbar { flex-wrap: wrap; }
+    .cw-profile-toolbar > #connection_profiles:not(.cw-picker-native),
+    .cw-profile-toolbar > .cw-picker {
+        box-sizing: border-box;
+        flex: 0 0 100%;
+        margin-inline: 0 !important;
+    }
+    .cw-profile-toolbar > .menu_button { flex: none; }
+}
 @media (max-width: 420px) {
     .cw-popup:has(.cw-group-manager, .cw-parameter-preset-editor) .popup-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .cw-popup:has(.cw-group-manager, .cw-parameter-preset-editor) .popup-controls > .menu_button { box-sizing: border-box; width: 100%; min-width: 0; margin: 0; }

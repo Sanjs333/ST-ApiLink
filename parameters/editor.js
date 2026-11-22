@@ -50,11 +50,11 @@ export function createParameterPresetControls({ store, readFields, writeFields, 
             select.value = matching ? 'preset:' + matching.id : empty ? 'none' : 'custom';
         } catch (error) { report(error); }
     }
-    async function openEditor() {
+    async function openEditor({ asCustom = false } = {}) {
         if (stopped) return;
         if (editorPromise) return editorPromise;
         const version = contextVersion;
-        editorPromise = editParameters({ store, selectedId: selectedPresetId, initialFields: parameterFields(readFields()),
+        editorPromise = editParameters({ store, selectedId: asCustom ? null : selectedPresetId, initialFields: parameterFields(readFields()),
             canApply: () => !stopped && version === contextVersion, apply: writeFields, onError });
         try {
             const result = await editorPromise;
@@ -67,7 +67,7 @@ export function createParameterPresetControls({ store, readFields, writeFields, 
     edit.replaceChildren(element('i', { class: 'fa-solid fa-pen', 'aria-hidden': 'true' }));
     const onSelect = () => {
         try {
-            if (select.value === 'custom') { refresh(); return; }
+            if (select.value === 'custom') { refresh(); void openEditor({ asCustom: true }).catch(report); return; }
             const preset = select.value.startsWith('preset:') ? store.get(select.value.slice(7)) : null;
             if (select.value !== 'none' && !preset) throw new Error('此附加参数预设已不存在，请重新选择。');
             writeFields(parameterFields(preset?.fields));
@@ -104,8 +104,9 @@ async function editParameters({ store, selectedId, initialFields, canApply, appl
         controls.append(group);
         return [key, input];
     }));
-    let editingId = store.get(selectedId)?.id ?? null, busy = false, finished = false, result = null;
-    name.value = store.get(editingId)?.name ?? '';
+    const selected = store.get(selectedId);
+    let editingId = selected?.id ?? null, busy = false, finished = false, result = null;
+    name.value = selected?.name ?? '';
     const report = error => {
         status.textContent = error?.message || '附加参数未能保存，请重试。';
         status.classList.add('cw-important-note');

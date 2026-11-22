@@ -264,10 +264,7 @@ export async function init() {
         const assertContext = () => { if (!sameContext()) throw new Error('连接已切换，请关闭并重新打开密钥管理。'); };
         await vault.open({ title: '管理 API 密钥', defaultKey: chat && source === 'custom' ? runtime.currentCredential()?.key ?? key : key,
             canChoose: entry => selectable.includes(entry.key),
-            isChosen: entry => {
-                const binding = chat ? runtime.currentCredential() : { key, id: secret_state[key]?.find(item => item.active)?.id };
-                return binding?.key === entry.key && binding.id === entry.id;
-            },
+            getChosen: () => chat ? runtime.currentCredential() : { key, id: secret_state[key]?.find(item => item.active)?.id },
             onChoose: async entry => {
                 assertContext();
                 if (chat) return runtime.bindCurrent(entry.key, entry.id);
@@ -389,26 +386,38 @@ export async function init() {
             const term = query.value.trim().toLocaleLowerCase();
             const now = Date.now();
             const currentId = runtime.selected()?.id;
-            const times = new Map(runtime.profiles().map(profile => [profile.id, profileTime(profile)]));
-            return [...runtime.profiles()].filter(profile => (!groups || groups.matches(profile))
+            const profiles = runtime.profiles();
+            const validIds = new Set(profiles.map(profile => profile.id));
+            for (const id of selection) if (!validIds.has(id)) selection.delete(id);
+            const times = new Map(profiles.map(profile => [profile.id, profileTime(profile)]));
+            return profiles.filter(profile => (!groups || groups.matches(profile))
                 && (!term || [profile.name, profile.api, profile.model, groups?.searchable(profile) ?? ''].join(' ').toLocaleLowerCase().includes(term))
                 && matchesIdleDays(times.get(profile.id), usageControls.days, now))
                 .sort((a, b) => Number(b.id === currentId) - Number(a.id === currentId)
                     || compareUsageTimes(times.get(a.id), times.get(b.id), usageControls.oldestFirst) || a.name.localeCompare(b.name));
         };
-        let visibleProfiles = [];
+        let visibleProfiles = [], visibleProfileIds = new Set(), selectedVisibleCount = 0;
+        const setSelected = (id, selected) => {
+            const wasSelected = selection.has(id);
+            if (wasSelected === selected) return;
+            if (selected) selection.add(id); else selection.delete(id);
+            if (visibleProfileIds.has(id)) selectedVisibleCount += selected ? 1 : -1;
+        };
         const selectAll = element('input', { type: 'checkbox', title: '全选搜索结果', 'aria-label': '全选搜索结果', onchange: () => {
             scroller.preservePosition(() => {
-                for (const profile of visibleProfiles) if (selectAll.checked) selection.add(profile.id); else selection.delete(profile.id);
+                for (const profile of visibleProfiles) {
+                    if (selectAll.checked) selection.add(profile.id); else selection.delete(profile.id);
+                }
+                selectedVisibleCount = selectAll.checked ? visibleProfiles.length : 0;
                 updateControls();
             });
         } });
         const bulkCopy = button('复制所选', guarded(() => batchAction(false)));
         const bulkDelete = button('删除所选', guarded(() => batchAction(true)));
-        const clear = button('清空选择', () => scroller.preservePosition(() => { selection.clear(); updateControls(); }));
+        const clear = button('清空选择', () => scroller.preservePosition(() => { selection.clear(); selectedVisibleCount = 0; updateControls(); }));
         const toggle = button('多选', () => scroller.preservePosition(() => {
             multi = !multi;
-            if (!multi) selection.clear();
+            if (!multi) { selection.clear(); selectedVisibleCount = 0; }
             usageControls.setMulti(multi);
             render();
         }), 'cw-multi-toggle');
@@ -416,8 +425,8 @@ export async function init() {
                 if (profile.kind === 'group') return groups.renderHeading(profile);
                 const problems = runtime.problems(profile);
                 const checkbox = element('input', { type: 'checkbox', value: profile.id, hidden: !multi, checked: selection.has(profile.id), 'aria-label': '选择方案 ' + profile.name, onchange: () => {
-                    if (checkbox.checked) selection.add(profile.id); else selection.delete(profile.id);
-                    updateControls();
+                    setSelected(profile.id, checkbox.checked);
+                    updateControls(checkbox.closest('.cw-profile-row'));
                 } });
                 const info = element('div', { class: 'cw-row-info' }, [element('span', { class: 'cw-row-title', text: profile.name }), element('small', { class: 'cw-note', text: [runtime.groupFor?.(profile) ? '' : sourceLabel(profile.api === 'google' ? 'makersuite' : profile.api), profile.model || '未保存模型'].filter(Boolean).join(' · ') })]);
                 const usage = describeUsage(profileTime(profile));
@@ -443,7 +452,7 @@ export async function init() {
                     label: profile.name, isMulti: () => multi, isSelected: () => selection.has(profile.id),
                     isDisabled: () => busy, isCurrent: () => profile.id === runtime.selected()?.id,
                     isConnecting: () => connectingId === profile.id, onError: showError,
-                    toggleSelected: () => { if (selection.has(profile.id)) selection.delete(profile.id); else selection.add(profile.id); updateControls(); },
+                    toggleSelected: () => { setSelected(profile.id, !selection.has(profile.id)); updateControls(checkbox.closest('.cw-profile-row')); },
                     activate: async ({ keyboard }) => {
                         busy = true; connectingId = profile.id; updateControls();
                         let success = false;
@@ -459,10 +468,10 @@ export async function init() {
                     },
                 });
         }, { emptyText: '没有匹配的连接方案' });
-        function updateControls() {
+        function updateControls(changedRow) {
             const entries = visibleProfiles;
-            const selected = selectedProfiles(runtime.profiles(), selection);
-            const inView = entries.filter(profile => selection.has(profile.id)).length;
+            const selected = selection.size;
+            const inView = selectedVisibleCount;
             bulkControls.hidden = !multi;
             total.hidden = multi;
             total.textContent = `共 ${entries.length} 个`;
@@ -474,25 +483,33 @@ export async function init() {
             selectAll.checked = entries.length > 0 && inView === entries.length;
             selectAll.indeterminate = inView > 0 && inView < entries.length;
             selectAll.disabled = busy || !entries.length;
-            count.textContent = `共 ${entries.length} 个 · 已选 ${selected.length} 个`;
-            const hidden = selected.length - inView;
+            count.textContent = `共 ${entries.length} 个 · 已选 ${selected} 个`;
+            const hidden = selected - inView;
             count.title = hidden ? `其中 ${hidden} 个不在当前筛选结果中，批量操作包含这些已选方案` : '批量操作包含全部已选方案';
-            selectionNote.textContent = hidden ? `已选 ${selected.length} 个方案，其中 ${hidden} 个不在当前筛选结果中` : '';
+            selectionNote.textContent = hidden ? `已选 ${selected} 个方案，其中 ${hidden} 个不在当前筛选结果中` : '';
             selectionNote.hidden = !multi || !hidden;
-            bulkCopy.disabled = bulkDelete.disabled = clear.disabled = busy || !selected.length;
+            bulkCopy.disabled = bulkDelete.disabled = clear.disabled = busy || !selected;
             query.disabled = busy;
             usageControls.setDisabled(busy);
-            for (const control of list.querySelectorAll('button, input[type="checkbox"]')) control.disabled = busy;
             groups?.update();
+            if (changedRow?.cwRefreshState) {
+                const checkbox = changedRow.querySelector('input[type="checkbox"]');
+                checkbox.checked = selection.has(checkbox.value);
+                changedRow.cwRefreshState();
+                return;
+            }
+            for (const control of list.querySelectorAll('button, input[type="checkbox"]')) if (control.disabled !== busy) control.disabled = busy;
             for (const checkbox of list.querySelectorAll('input[type="checkbox"]')) {
                 checkbox.hidden = !multi;
                 checkbox.checked = selection.has(checkbox.value);
             }
-            for (const row of list.querySelectorAll('.cw-list-row')) row.cwRefreshState?.();
+            for (const row of scroller.loadedRows()) row.cwRefreshState?.();
         }
         function render(reset = false) {
             if (closed) return;
             visibleProfiles = filtered();
+            visibleProfileIds = new Set(visibleProfiles.map(profile => profile.id));
+            selectedVisibleCount = visibleProfiles.reduce((count, profile) => count + Number(selection.has(profile.id)), 0);
             if (!busy) {
                 const entries = visibleProfiles;
                 scroller.setItems(groups ? groups.rows(entries, { searching: Boolean(query.value.trim()), multi }) : entries, { reset });

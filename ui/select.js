@@ -418,7 +418,7 @@ export function installSearchableSelects({ root = document, selectors = DEFAULT_
             }
             if (lastValue !== select.value || lastIndex !== select.selectedIndex || lastDisabled !== select.disabled) {
                 const option = select.selectedOptions[0];
-                caption.textContent = option?.textContent || '请选择';
+                caption.textContent = option?.label || '请选择';
                 trigger.title = caption.textContent;
                 const label = selectLabel(select);
                 trigger.setAttribute('aria-label', label);
@@ -448,9 +448,9 @@ export function installSearchableSelects({ root = document, selectors = DEFAULT_
                 const stableId = group.dataset.cwConnectionGroup || group.dataset.cwModelGroup || group.id;
                 groupKeys.set(group, stableId ? `id:${stableId}` : `label:${group.label}:${ordinal}`);
             }
-            entries = Array.from(select.querySelectorAll('option')).map((option, index) => {
+            entries = Array.from(select.options, (option, index) => {
                 const group = option.parentElement?.tagName === 'OPTGROUP' ? option.parentElement : null;
-                const label = option.textContent ?? '';
+                const label = option.label;
                 return { option, index, label, group: group?.label ?? '', groupNode: group, groupKey: groupKeys.get(group) ?? null,
                     disabled: option.disabled || Boolean(group?.disabled), hidden: option.hidden || Boolean(group?.hidden), searchable: `${label} ${option.value} ${group?.label ?? ''}`.toLocaleLowerCase() };
             }).filter(entry => !entry.hidden);

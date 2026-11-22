@@ -14,6 +14,12 @@ export function linkLegacyState(settings, getExtensionSettings) {
     });
     return () => {
         const value = settings.custom_provider_state;
-        Object.defineProperty(settings, 'custom_provider_state', { ...original, configurable: true, enumerable: true, writable: true, value });
+        if (original && !('value' in original)) {
+            Object.defineProperty(settings, 'custom_provider_state', original);
+            if (original.set && settings.custom_provider_state !== value) settings.custom_provider_state = value;
+        } else {
+            Object.defineProperty(settings, 'custom_provider_state', original ? { ...original, value }
+                : { configurable: true, enumerable: true, writable: true, value });
+        }
     };
 }

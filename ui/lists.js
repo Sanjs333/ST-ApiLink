@@ -151,6 +151,7 @@ export function continuousList(container, renderRow, { emptyText = '没有匹配
             container.replaceChildren(fragment);
             schedulePosition(position);
         },
+        loadedRows() { return rows.map(row => row.node); },
         cleanup() {
             disposed = true; pendingPosition = null;
             if (frame !== null) cancelAnimationFrame(frame);

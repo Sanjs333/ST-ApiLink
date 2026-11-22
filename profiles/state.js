@@ -169,10 +169,16 @@ export function profileDeletionKeys(targetProfiles, allProfiles, vault, resolveS
         if (binding) remaining.add(token(binding));
     }
     const candidates = new Map();
+    const recordsByKey = new Map();
     for (const profile of targetProfiles) {
         const binding = profileKeyReference(profile, resolveSourceKey);
         if (!binding) continue;
-        const record = vault[binding.key]?.find(entry => entry.id === binding.id);
+        if (!recordsByKey.has(binding.key)) {
+            const byId = new Map();
+            for (const entry of vault[binding.key] ?? []) if (!byId.has(entry.id)) byId.set(entry.id, entry);
+            recordsByKey.set(binding.key, byId);
+        }
+        const record = recordsByKey.get(binding.key).get(binding.id);
         if (!record) continue;
         candidates.set(token(binding), { key: binding.key, id: binding.id, label: record.label ?? '' });
     }

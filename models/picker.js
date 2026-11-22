@@ -53,11 +53,12 @@ export function installModelPicker(input, { groupButtonStyle = 'icon' } = {}) {
     panel.append(list);
     wrapper.append(panel);
 
-    let entries = [], matches = [], rows = new Map(), headings = [], highlighted = -1, stopped = false, choosing = false;
+    let entries = [], foundEntries = [], matches = [], rows = new Map(), headings = [], highlighted = -1, stopped = false, choosing = false;
     let currentQuery = '', filteredValue = null, activeGroupKey = null;
     let themeDirty = true;
     let rowHeight = 30, headingHeight = 32, visibleRows = [], rowForMatch = [], rowOffsets = [0], renderedStart = -1, renderedEnd = -1;
     let scrollFrame = null;
+    const counts = new Map();
     const collapsed = new Set();
     const groupKeys = new Set();
     const listeners = [];
@@ -199,31 +200,35 @@ export function installModelPicker(input, { groupButtonStyle = 'icon' } = {}) {
         filteredValue = input.value;
         const previousScroll = list.scrollTop;
         const terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
-        const found = entries.filter(entry => terms.every(term => entry.searchable.includes(term)));
+        foundEntries.length = 0;
+        matches.length = 0;
+        counts.clear();
+        for (const entry of entries) {
+            if (!terms.every(term => entry.searchable.includes(term))) continue;
+            foundEntries.push(entry);
+            counts.set(entry.groupKey, (counts.get(entry.groupKey) ?? 0) + 1);
+        }
         const searching = Boolean(terms.length);
-        const counts = new Map();
-        for (const entry of found) counts.set(entry.groupKey, (counts.get(entry.groupKey) ?? 0) + 1);
-        matches = found.filter(entry => !entry.group || searching || !collapsed.has(entry.groupKey));
-        const matchIndexes = new Map(matches.map((entry, index) => [entry, index]));
-        visibleRows = []; rowForMatch = []; rowOffsets = [0];
-        headings = [];
+        visibleRows.length = 0; rowForMatch.length = 0; rowOffsets.length = 1; rowOffsets[0] = 0;
+        headings.length = 0;
         let group = null;
-        found.forEach(entry => {
+        for (const entry of foundEntries) {
             if (entry.group && entry.groupKey !== group) {
                 const expanded = searching || !collapsed.has(entry.groupKey);
                 visibleRows.push({ headingIndex: headings.length });
-                rowOffsets.push(rowOffsets.at(-1) + headingHeight);
+                rowOffsets.push(rowOffsets[rowOffsets.length - 1] + headingHeight);
                 headings.push({ key: entry.groupKey, group: entry.group, expanded, count: counts.get(entry.groupKey),
                     rowIndex: visibleRows.length - 1, node: null });
             }
             group = entry.groupKey;
-            const matchIndex = matchIndexes.get(entry);
-            if (matchIndex !== undefined) {
+            if (!entry.group || searching || !collapsed.has(entry.groupKey)) {
+                const matchIndex = matches.length;
+                matches.push(entry);
                 rowForMatch[matchIndex] = visibleRows.length;
                 visibleRows.push({ matchIndex });
-                rowOffsets.push(rowOffsets.at(-1) + rowHeight);
+                rowOffsets.push(rowOffsets[rowOffsets.length - 1] + rowHeight);
             }
-        });
+        }
         list.scrollTop = preserveScroll ? previousScroll : 0;
         const preferred = preferredId ? matches.findIndex(entry => entry.id === preferredId) : -1;
         const selected = matches.findIndex(entry => entry.id === input.value);
@@ -393,7 +398,7 @@ export function installModelPicker(input, { groupButtonStyle = 'icon' } = {}) {
     }
     function clear() {
         if (stopped) return;
-        entries = []; matches = []; rows.clear(); headings = []; highlighted = -1; currentQuery = ''; filteredValue = null; activeGroupKey = null;
+        entries = []; foundEntries.length = 0; matches.length = 0; rows.clear(); headings.length = 0; highlighted = -1; currentQuery = ''; filteredValue = null; activeGroupKey = null;
         visibleRows = []; rowForMatch = []; rowOffsets = [0]; renderedStart = -1; renderedEnd = -1;
         groupKeys.clear();
         close();

@@ -111,7 +111,8 @@ export function createProfileGroupControls({ runtime, onChange = () => {}, onEdi
     }
 
     async function addModel(group) {
-        const members = runtime.profiles().filter(profile => group.profileIds.includes(profile.id));
+        const memberIds = new Set(group.profileIds);
+        const members = runtime.profiles().filter(profile => memberIds.has(profile.id));
         const base = preferredProfile(members);
         if (!base) throw new Error('此连接组已没有可用的方案。');
         const root = element('div', { class: 'cw-dialog cw-editor cw-group-model-editor' });

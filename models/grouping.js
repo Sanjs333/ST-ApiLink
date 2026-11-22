@@ -20,15 +20,20 @@ export function modelFamily(id) {
     return FAMILIES.find(([, pattern]) => pattern.test(text))?.[0] ?? '其他';
 }
 
-function relayPrefix(id) {
-    const bracket = id.match(/^(?:\[([^\]\r\n]{1,64})\]|【([^】\r\n]{1,64})】)(.+)$/);
-    if (bracket) return (bracket[1] ?? bracket[2]).trim();
-    const path = id.match(/^([^/:|\r\n]{1,96})[/:|](.+)$/);
-    if (path && !/^(?:models?|https?)$/i.test(path[1]) && modelFamily(path[1]) === '其他') return path[1];
+function relayParts(id) {
+    const wrapped = id.match(/^(?:\[([^\]\r\n]{1,96})\]|【([^】\r\n]{1,96})】|\(([^)\r\n]{1,96})\)|（([^）\r\n]{1,96})）|\{([^}\r\n]{1,96})\}|〈([^〉\r\n]{1,96})〉|「([^」\r\n]{1,96})」|『([^』\r\n]{1,96})』)(?:\s*[/：:|_-]\s*|\s*)(.+)$/);
+    if (wrapped) return { prefix: (wrapped.slice(1, 9).find(Boolean) ?? '').trim(), model: wrapped[9].trim() };
+    const path = id.match(/^([^\[\]【】()（）{}〈〉/:|：\s_-]{1,96})\s*[/：:|]\s*(.+)$/);
+    if (path && !/^(?:models?|https?)$/i.test(path[1]) && modelFamily(path[1]) === '其他') return { prefix: path[1], model: path[2].trim() };
     // A relay may use a hyphen/underscore, but only split before a known family.
     const named = id.match(/^(.{1,96}?)[-_]((?:claude|gemini|gemma|gpt|chatgpt|o\d+|deepseek|qwen\d*|qwq|qvq|glm|chatglm|llama\d*|mistral|grok)(?:[-_.:/]|$).*)$/i);
-    if (named && modelFamily(named[1]) === '其他') return named[1];
+    if (named && modelFamily(named[1]) === '其他') return { prefix: named[1], model: named[2] };
     return null;
+}
+
+function prefixIdentity(prefix) {
+    return prefix.trim().replace(/^[\[\]【】()（）{}〈〉<>@#$%^&*!~`]+|[\[\]【】()（）{}〈〉<>@#$%^&*!~`]+$/g, '')
+        .replace(/\s+/g, ' ').toLocaleLowerCase();
 }
 
 /** Group suggestions automatically; preserve IDs, labels and caller fields exactly. */
@@ -36,25 +41,28 @@ export function groupModelEntries(items) {
     const prefixes = new Map();
     const prepared = items.map(item => {
         const id = String(item.id ?? '');
-        const prefix = item.group ? null : relayPrefix(id);
+        const relay = item.group ? null : relayParts(id);
+        const prefix = relay?.prefix ?? null;
         if (prefix) {
-            if (!prefixes.has(prefix)) prefixes.set(prefix, new Set());
-            prefixes.get(prefix).add(id);
+            const prefixKey = prefixIdentity(prefix);
+            if (prefixKey && !prefixes.has(prefixKey)) prefixes.set(prefixKey, { display: prefix.trim().replace(/^[\[\]【】()（）{}〈〉<>@#$%^&*!~`]+|[\[\]【】()（）{}〈〉<>@#$%^&*!~`]+$/g, ''), ids: new Set() });
+            if (prefixKey) prefixes.get(prefixKey).ids.add(id);
         }
-        return { item, id, prefix };
+        return { item, id, prefix, relayModel: relay?.model ?? '', prefixKey: prefix ? prefixIdentity(prefix) : '' };
     });
     const groups = new Map();
-    for (const { item, id, prefix } of prepared) {
+    for (const { item, id, prefix, relayModel, prefixKey } of prepared) {
         const family = modelFamily(id);
-        const candidates = [...id.split(/[/:]/), ...(prefix ? [id.slice(prefix.length + 1)] : [])];
+        const candidates = [...id.split(/[/:]/), ...(relayModel ? [relayModel] : [])];
         const nestedFamily = family !== '其他' ? family : candidates.map(modelFamily).find(value => value !== '其他') ?? '其他';
-        const group = item.group || (prefix && prefixes.get(prefix).size > 1 ? prefix : nestedFamily);
+        const prefixGroup = prefixKey && prefixes.get(prefixKey);
+        const group = item.group || (prefixGroup?.ids?.size > 1 ? prefixGroup.display : nestedFamily);
         const key = item.groupKey ?? group;
         if (!groups.has(key)) groups.set(key, []);
         groups.get(key).push({ ...item, group, groupKey: key });
     }
     // A single family has nothing to organize; keep a short list visually quiet.
-    const showGroups = groups.size > 1 || prepared.some(({ item, prefix }) => item.group || (prefix && prefixes.get(prefix).size > 1));
+    const showGroups = groups.size > 1 || prepared.some(({ item, prefixKey }) => item.group || (prefixKey && prefixes.get(prefixKey)?.ids?.size > 1));
     return [...groups.values()].flat().map(item => ({ ...item, group: showGroups ? item.group : '' }));
 }
 

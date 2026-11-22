@@ -51,19 +51,21 @@ export function createParameterPresetStore({ getSettings, saveSettings, makeId =
         throw new Error('附加参数预设需要酒馆设置接口。');
     }
     const subscribers = new Set();
-    function list() {
+    function* entries(onlyId) {
         const saved = getSettings()?.parameterPresets;
-        if (!Array.isArray(saved)) return [];
-        const ids = new Set(), result = [];
+        if (!Array.isArray(saved)) return;
+        const ids = new Set();
         for (const preset of saved) {
             try {
+                if (onlyId !== undefined && preset?.id !== onlyId) continue;
                 if (typeof preset?.id !== 'string' || !preset.id || ids.has(preset.id)) continue;
                 const entry = { id: preset.id, name: presetName(preset.name), fields: normalizeParameterFields(preset.fields) };
-                ids.add(entry.id); result.push(entry);
+                ids.add(entry.id);
+                yield entry;
             } catch { /* A malformed imported record does not hide the remaining presets. */ }
         }
-        return result;
     }
+    const list = () => [...entries()];
     function write(next) {
         const settings = getSettings();
         if (!isMapping(settings)) throw new Error('附加参数预设设置暂不可用。');
@@ -82,7 +84,7 @@ export function createParameterPresetStore({ getSettings, saveSettings, makeId =
     return {
         list,
         validate(fields) { return validateParameterFields(fields, parseYaml); },
-        get(id) { return list().find(preset => preset.id === id) ?? null; },
+        get(id) { return typeof id === 'string' && id ? entries(id).next().value ?? null : null; },
         save({ id, name, fields } = {}) {
             const entries = list(), normalizedName = presetName(name);
             const index = id === undefined ? -1 : entries.findIndex(preset => preset.id === id);

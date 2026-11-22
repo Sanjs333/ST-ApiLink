@@ -86,16 +86,16 @@ export async function mergeDuplicateSecrets({
             if (shouldStop()) break;
             if (!exists(to)) { result.retained++; continue; }
             if (!exists(from)) continue;
+            phase = 'delete';
+            onProgress({ phase, index: index + 1, total: planned.length, from, keep: to });
+            if (shouldStop()) break;
+            if (!exists(to)) { result.retained++; continue; }
             // A save that silently failed or a reference added while saving must prevent deletion.
             if (referencingProfiles(getProfiles(), from.key, from.id, resolveSourceKey).length) {
                 result.failed++;
                 result.errors.push({ key: from.key, id: from.id, phase: 'references' });
                 continue;
             }
-            phase = 'delete';
-            onProgress({ phase, index: index + 1, total: planned.length, from, keep: to });
-            if (shouldStop()) break;
-            if (!exists(to) || referencingProfiles(getProfiles(), from.key, from.id, resolveSourceKey).length) { result.retained++; continue; }
             await removeKey(from.key, from.id);
             if (exists(from)) throw new Error('密钥未能删除。');
             result.deleted++;

@@ -1,4 +1,5 @@
 import { createParameterPresetControls } from '../parameters/editor.js';
+import { touchesSelector } from './mutations.js';
 
 const HIDDEN_CLASS = 'cw-native-parameter-entry-hidden';
 
@@ -29,10 +30,9 @@ export function installNativeParameterPresets({ store, getSource, readFields, wr
     };
     documentRef.addEventListener('click', onClick, true);
     const observer = new windowRef.MutationObserver(records => {
+        if (stopped || timer !== null) return;
         const selector = '#custom_form, #customize_additional_parameters';
-        const relevant = records.some(record => [...record.addedNodes, ...record.removedNodes].some(node => node.nodeType === 1
-            && (node.matches(selector) || node.querySelector(selector))));
-        if (!relevant || stopped || timer !== null) return;
+        if (!records.some(record => touchesSelector(record, selector))) return;
         timer = windowRef.setTimeout(() => { timer = null; refresh({ resetSelection: true }); }, 0);
     });
     observer.observe(root.querySelector('#rm_api_block') ?? (root.nodeType === 9 ? root.body : root), { childList: true, subtree: true });

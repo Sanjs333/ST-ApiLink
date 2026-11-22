@@ -4,7 +4,11 @@ import { PROFILE_FIELD, profileSource, draftFingerprint as stableGroupValue } fr
 export function buildProfileGroupRows(profiles, groups, { collapsed = new Set(), searching = false, multi = false, emptyGroupIds = [] } = {}) {
     if (!groups.length) return [...profiles];
     const membership = new Map();
-    for (const group of groups) for (const id of group.profileIds) membership.set(id, group);
+    const groupsById = new Map();
+    for (const group of groups) {
+        groupsById.set(group.id, group);
+        for (const id of group.profileIds) membership.set(id, group);
+    }
     const buckets = new Map();
     for (const profile of profiles) {
         const group = membership.get(profile.id) ?? null;
@@ -14,7 +18,7 @@ export function buildProfileGroupRows(profiles, groups, { collapsed = new Set(),
     }
     // Retained empty groups remain manageable; nonempty groups hidden by filters stay hidden.
     if (!searching) for (const id of emptyGroupIds) {
-        const group = groups.find(entry => entry.id === id);
+        const group = groupsById.get(id);
         if (group && !group.profileIds.length && !buckets.has(id)) buckets.set(id, { group, profiles: [] });
     }
     const rows = [];

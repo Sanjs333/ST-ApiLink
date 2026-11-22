@@ -6,6 +6,7 @@ import { sha256 } from '../compat/libraries.js';
 import { Popup, POPUP_RESULT, POPUP_TYPE, callGenericPopup } from '../../../../popup.js';
 import { indexSecretReferences, referencingProfiles } from '../profiles/state.js';
 import { sourceKey } from '../profiles/runtime.js';
+import { createSecretSelection } from './selection.js';
 import { element, button, field, dialog, searchInput, showError, themedPopupOptions } from '../ui/common.js';
 import { continuousList, bindListRow, createUsageControls } from '../ui/lists.js';
 import { groupDuplicateSecrets, mergeDuplicateSecrets } from './deduplication.js';
@@ -103,7 +104,7 @@ export function createSecretManager(runtime, onError = showError) {
         return created;
     }
 
-    async function open({ onChoose = null, canChoose = () => true, isChosen = null, onNone = null, isNone = () => false, onRebind = null, allowedKeys = MANAGED_SECRET_KEYS, defaultKey = '', title = '管理 API 密钥' } = {}) {
+    async function open({ onChoose = null, canChoose = () => true, isChosen = null, getChosen = () => runtime.currentCredential?.(), onNone = null, isNone = () => false, onRebind = null, allowedKeys = MANAGED_SECRET_KEYS, defaultKey = '', title = '管理 API 密钥' } = {}) {
         if (disposed) return;
         await readSecretState();
         const root = element('div', { class: 'cw-dialog cw-manager' });
@@ -112,7 +113,7 @@ export function createSecretManager(runtime, onError = showError) {
         const count = element('span', { class: 'cw-note cw-bulk-count' });
         const hiddenSelectionNote = element('div', { class: 'cw-note cw-hidden-selection-note', hidden: true });
         const browseCount = element('span', { class: 'cw-note' });
-        const selection = new Set();
+        const selection = createSecretSelection();
         const state = { stop: false, busy: false, scanning: false, closed: false, multi: false, controller: null };
         sessions.add(state);
         let query = '';
@@ -132,17 +133,14 @@ export function createSecretManager(runtime, onError = showError) {
         referencesFilter.addEventListener('change', () => render(true));
         const rows = () => allowedKeys.flatMap(key => (secret_state[key] ?? []).map(entry => ({ key, id: entry.id, label: entry.label, active: entry.active })));
         const lastUsed = entry => runtime.usage?.secretTime(entry.key, entry.id) ?? null;
-        const isCurrent = entry => {
-            if (isChosen) return Boolean(isChosen(entry));
-            const current = runtime.currentCredential?.();
-            return current?.key === entry.key && current.id === entry.id;
-        };
-        const filtered = () => {
+        const matchesBinding = (entry, current) => current?.key === entry.key && current.id === entry.id;
+        const isCurrent = entry => isChosen ? Boolean(isChosen(entry)) : matchesBinding(entry, getChosen());
+        const filtered = (entries = rows()) => {
             referenceIndex = indexSecretReferences(runtime.profiles(), sourceKey);
             const now = Date.now();
-            const entries = rows();
             const times = new Map(entries.map(entry => [entry, lastUsed(entry)]));
-            const current = new Set(entries.filter(isCurrent));
+            const binding = isChosen ? null : getChosen();
+            const current = new Set(entries.filter(isChosen ?? (entry => matchesBinding(entry, binding))));
             return entries.filter(entry => {
                 const hasReferences = Boolean(referenceIndex.get(tokenFor(entry))?.length);
                 return (!category.value || entry.key === category.value)
@@ -255,9 +253,8 @@ export function createSecretManager(runtime, onError = showError) {
                 state.controller = null; state.busy = false; state.scanning = false; render();
             }
         }));
-        const stopMerge = button('停止合并', () => { state.stop = true; state.controller?.abort(); });
-        stopMerge.hidden = true;
         const mergeDuplicates = button('合并重复密钥', guarded(async () => {
+            if (state.busy && duplicateGroups.length) { state.stop = true; state.controller?.abort(); updateControls(); return; }
             if (!duplicateGroups.length || state.busy) return;
             const groups = structuredClone(duplicateGroups);
             state.busy = true; state.stop = false; updateControls();
@@ -276,7 +273,7 @@ export function createSecretManager(runtime, onError = showError) {
                     element('p', { text: '方案的 API 地址授权会保留。密钥删除后无法撤销；核对或保存失败的项会保留。' }),
                 ]);
                 if (await callGenericPopup(confirmation, POPUP_TYPE.CONFIRM, '', themedPopupOptions({ wide: true, okButton: '合并', cancelButton: '取消' })) !== POPUP_RESULT.AFFIRMATIVE || cancelled()) return;
-                stopMerge.hidden = false; updateControls();
+                updateControls();
                 const result = await mergeDuplicateSecrets({
                     groups, getProfiles: runtime.profiles, getVault: () => secret_state, resolveSourceKey: sourceKey,
                     shouldStop: cancelled,
@@ -314,12 +311,12 @@ export function createSecretManager(runtime, onError = showError) {
                     + (result.retained ? `，${result.retained} 把因状态变化保留` : '') + (result.stopped ? '，已停止' : '');
                 if (result.errors.some(error => error.phase === 'references')) progress.textContent += '。方案或连接改绑未确认保存，请检查连接后重试。';
             } finally {
-                state.busy = false; state.controller = null; stopMerge.hidden = true;
+                state.busy = false; state.controller = null;
                 for (const key of affected) await eventSource.emit(event_types.SECRET_DELETED, key);
                 render();
             }
         }));
-        const duplicateSummary = element('div', { class: 'cw-dedup-summary', hidden: true }, [duplicateText, mergeDuplicates, stopMerge]);
+        const duplicateSummary = element('div', { class: 'cw-dedup-summary', hidden: true }, [duplicateText, mergeDuplicates]);
         let nonePending = false;
         const noKey = onNone ? button('不使用密钥', guarded(async () => {
             nonePending = true;
@@ -343,8 +340,9 @@ export function createSecretManager(runtime, onError = showError) {
                 if (cancelled()) return;
                 const selected = rows().filter(entry => selection.has(tokenFor(entry)));
                 if (!selected.length) throw new Error('请先勾选要删除的密钥。');
+                const previewReferences = indexSecretReferences(runtime.profiles(), sourceKey);
                 const snapshots = new Map(selected.map(entry => [tokenFor(entry), {
-                    profiles: new Set(referencingProfiles(runtime.profiles(), entry.key, entry.id, sourceKey).map(profile => profile.id)),
+                    profiles: new Set((previewReferences.get(tokenFor(entry)) ?? []).map(profile => profile.id)),
                     active: Boolean(entry.active), current: isCurrent(entry), lastUsed: lastUsed(entry),
                 }]));
                 const references = new Set([...snapshots.values()].flatMap(snapshot => [...snapshot.profiles]));
@@ -399,7 +397,7 @@ export function createSecretManager(runtime, onError = showError) {
                 const checkbox = element('input', { type: 'checkbox', value: token, hidden: !state.multi, checked: selection.has(token), disabled: state.busy, 'aria-label': '选择 ' + (entry.label || '未命名密钥'), onchange: () => {
                     if (!state.multi || state.busy) return;
                     if (checkbox.checked) selection.add(token); else selection.delete(token);
-                    updateControls();
+                    updateControls(checkbox.closest('.cw-secret-row'));
                 } });
                 const refs = referenceIndex.get(token) ?? [];
                 const presentation = secretPresentation(entry, refs);
@@ -424,7 +422,7 @@ export function createSecretManager(runtime, onError = showError) {
                     label: presentation.title, isMulti: () => state.multi, isSelected: () => selection.has(token),
                     isDisabled: () => state.busy, canActivate: () => Boolean(onChoose && canChoose(entry)),
                     isCurrent: () => isCurrent(entry), isConnecting: () => connectingToken === token, onError,
-                    toggleSelected: () => { if (selection.has(token)) selection.delete(token); else selection.add(token); updateControls(); },
+                    toggleSelected: () => { if (selection.has(token)) selection.delete(token); else selection.add(token); updateControls(checkbox.closest('.cw-secret-row')); },
                     activate: async ({ keyboard }) => {
                         state.busy = true; connectingToken = token; updateControls();
                         let success = false;
@@ -440,10 +438,10 @@ export function createSecretManager(runtime, onError = showError) {
                     },
                 });
         }, { emptyText: '没有匹配的密钥', keyOf: tokenFor });
-        function updateControls() {
+        function updateControls(changedRow) {
             const matches = visibleSecrets;
-            const inView = matches.filter(entry => selection.has(tokenFor(entry))).length;
-            const selected = rows().filter(entry => selection.has(tokenFor(entry))).length;
+            const inView = selection.visibleCount;
+            const selected = selection.size;
             selectAll.checked = matches.length > 0 && inView === matches.length;
             selectAll.indeterminate = inView > 0 && inView < matches.length;
             selectAll.disabled = state.busy || !matches.length;
@@ -452,7 +450,7 @@ export function createSecretManager(runtime, onError = showError) {
             hiddenSelectionNote.textContent = hidden ? `其中 ${hidden} 把不在当前筛选结果中；删除所选仍包含这些密钥。` : '';
             hiddenSelectionNote.hidden = !state.multi || !hidden;
             count.title = [count.textContent, hiddenSelectionNote.textContent].filter(Boolean).join(' · ');
-            browseCount.textContent = `共 ${matches.length} 把`;
+            browseCount.textContent = `符合当前范围 ${matches.length} 把`;
             browseCount.hidden = state.multi;
             bulkControls.hidden = !state.multi;
             multiToggle.title = state.multi ? '退出多选' : '多选';
@@ -461,14 +459,17 @@ export function createSecretManager(runtime, onError = showError) {
             multiToggle.classList.toggle('active', state.multi);
             multiToggle.disabled = state.busy;
             bulkDelete.disabled = state.busy || !selected;
-            const renameScope = state.multi ? rows().filter(entry => selection.has(tokenFor(entry))) : matches;
-            bulkRename.disabled = state.busy || !renameScope.some(entry => secretPresentation(entry, referenceIndex.get(tokenFor(entry)) ?? []).canRename);
+            bulkRename.disabled = state.busy || !selection.canRename(state.multi);
             bulkRename.title = state.multi ? '按方案名批量重命名所选密钥（包含筛选隐藏的已选项）' : '按方案名批量重命名当前筛选结果';
             clear.disabled = state.busy || !selection.size;
             addKey.disabled = scanDuplicates.disabled = search.disabled = category.disabled = referencesFilter.disabled = state.busy;
             usageControls.setDisabled(state.busy);
             stopScan.hidden = !state.scanning;
-            mergeDuplicates.disabled = state.busy || !duplicateGroups.length;
+            mergeDuplicates.disabled = !duplicateGroups.length;
+            const stoppingMerge = state.busy && duplicateGroups.length;
+            mergeDuplicates.title = stoppingMerge ? '停止合并' : '合并重复密钥';
+            mergeDuplicates.setAttribute('aria-label', mergeDuplicates.title);
+            mergeDuplicates.querySelector('i').className = 'fa-solid ' + (stoppingMerge ? 'fa-stop' : 'fa-object-group');
             if (noKey) {
                 const enabled = Boolean(isNone());
                 noKey.disabled = state.busy || nonePending;
@@ -477,16 +478,30 @@ export function createSecretManager(runtime, onError = showError) {
                 noKey.title = enabled ? '取消不使用密钥' : '不使用密钥';
                 noKey.setAttribute('aria-label', noKey.title);
             }
-            for (const control of list.querySelectorAll('button, input[type="checkbox"]')) control.disabled = state.busy;
+            if (changedRow?.cwRefreshState) {
+                const checkbox = changedRow.querySelector('input[type="checkbox"]');
+                checkbox.checked = selection.has(checkbox.value);
+                changedRow.cwRefreshState();
+                return;
+            }
+            for (const control of list.querySelectorAll('button, input[type="checkbox"]')) if (control.disabled !== state.busy) control.disabled = state.busy;
             for (const checkbox of list.querySelectorAll('input[type="checkbox"]')) {
                 checkbox.hidden = !state.multi;
                 checkbox.checked = selection.has(checkbox.value);
             }
-            for (const row of list.querySelectorAll('.cw-list-row')) row.cwRefreshState?.();
+            for (const row of scroller.loadedRows()) row.cwRefreshState?.();
         }
         function render(reset = false) {
             if (state.closed || disposed) return;
-            visibleSecrets = filtered();
+            const entries = rows();
+            visibleSecrets = filtered(entries);
+            const all = new Set(), eligible = new Set();
+            for (const entry of entries) {
+                const key = tokenFor(entry), refs = referenceIndex.get(key);
+                all.add(key);
+                if (refs?.length === 1 && secretPresentation(entry, refs).canRename) eligible.add(key);
+            }
+            selection.refresh(all, new Set(visibleSecrets.map(tokenFor)), eligible);
             if (!state.busy) {
                 scroller.setItems(visibleSecrets, { reset });
             }

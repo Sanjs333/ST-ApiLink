@@ -173,10 +173,20 @@ export async function scanSecretFingerprints(entries, {
         candidates = latest;
         output.length = candidates.length;
         abortIfNeeded(controller.signal);
-        for (let index = 0; index < candidates.length; index++) {
-            const entry = candidates[index];
-            await digest(indexes.get(entry.key).get(entry.id), index);
-        }
+        let nextIndex = 0, failure;
+        const worker = async () => {
+            while (!controller.signal.aborted && nextIndex < candidates.length) {
+                const index = nextIndex++, entry = candidates[index];
+                try { await digest(indexes.get(entry.key).get(entry.id), index); }
+                catch (error) {
+                    if (!failure) { failure = error; controller.abort(error); }
+                    return;
+                }
+            }
+        };
+        await Promise.allSettled(Array.from({ length: Math.min(6, candidates.length) }, worker));
+        if (failure) throw failure;
+        abortIfNeeded(controller.signal);
         return output;
     } finally {
         clearSecretValues(snapshot);
