@@ -275,8 +275,6 @@ select.cw-picker-native.select2-hidden-accessible {
 .cw-native-model-row { display: flex; align-items: center; flex-wrap: nowrap; gap: 4px; width: 100%; min-width: 0; }
 .cw-native-model-row > select, .cw-native-model-row > .cw-picker, .cw-native-model-row > .select2-container { flex: 1 1 0; width: 0 !important; min-width: 0; margin: 0 !important; }
 .cw-native-model-row > .cw-model-button { margin: 0 !important; }
-.cw-native-model-status { display: block; margin-top: 4px; }
-.cw-native-model-status:empty { display: none; }
 
 .cw-native-chat-hidden { display: none !important; }
 .cw-native-region-field { display: grid; gap: 5px; margin-block: 10px 5px; }

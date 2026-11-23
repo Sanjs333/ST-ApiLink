@@ -9,8 +9,8 @@ export const MODEL_DISCOVERY_SOURCES = Object.freeze([
 
 // Azure's status handler also sends a completion probe; CometAPI is disabled.
 // Neither is an appropriate endpoint for a model-list button.
-export function supportsModelDiscovery(source, { vertexai_auth_mode = 'express' } = {}) {
-    return source === 'vertexai' ? vertexai_auth_mode === 'full' : MODEL_DISCOVERY_SOURCES.includes(source);
+export function supportsModelDiscovery(source) {
+    return MODEL_DISCOVERY_SOURCES.includes(source);
 }
 
 export function mergeModelSuggestions(...lists) {
@@ -64,18 +64,13 @@ export async function fetchModelList(request, { headers, signal, fetchImpl = fet
 
 async function requestModels(request, { headers, signal, fetchImpl }) {
     abortIfNeeded(signal);
-    if (request?.chat_completion_source === 'vertexai' && request.vertexai_auth_mode !== 'full') {
-        throw new Error('Vertex 模型目录需要 Full 服务账号；Express API Key 不支持此目录。');
-    }
-    if (!request || !supportsModelDiscovery(request.chat_completion_source, request)) {
+    if (!request || !supportsModelDiscovery(request.chat_completion_source)) {
         throw new Error('此来源暂不支持拉取模型，请手动填写模型 ID。');
     }
-    const vertex = request.chat_completion_source === 'vertexai';
-    const response = await fetchImpl(vertex ? '/api/plugins/st-apilink/models/vertexai' : '/api/backends/chat-completions/status', {
+    const response = await fetchImpl('/api/backends/chat-completions/status', {
         method: 'POST', headers, signal, cache: 'no-cache', body: JSON.stringify(request),
     });
     abortIfNeeded(signal);
-    if (vertex && response.status === 404) throw new Error('Vertex 模型目录服务未加载，请安装配套服务端并重启酒馆。');
     let payload;
     try { payload = await response.json(); }
     catch (error) {

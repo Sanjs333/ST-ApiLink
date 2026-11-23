@@ -26,7 +26,6 @@ import { createProfileGroupControls } from './profiles/group-controls.js';
 import { createParameterPresetStore } from './parameters/store.js';
 import { installNativeParameterPresets } from './native/parameters.js';
 import { installNativeModelControls } from './native/models.js';
-import { fetchModelList } from './models/discovery.js';
 import { manageCustomModels } from './models/manager.js';
 import { installNativeChatUi } from './native/chat.js';
 
@@ -762,18 +761,7 @@ export async function init() {
     eventSource.on(event_types.APP_READY, ready);
     eventSource.on(event_types.MAIN_API_CHANGED, renderStatus);
     removers.push(() => eventSource.removeListener(event_types.APP_READY, ready), () => eventSource.removeListener(event_types.MAIN_API_CHANGED, renderStatus));
-    const nativeModels = installNativeModelControls({ onOpen: openModels, onError: showError,
-        onSelectCatalog: (source, entry) => models.ensureOption(source, entry.id, entry.label),
-        getSource: () => main_api === 'openai' ? oai_settings.chat_completion_source : null,
-        getModelContext: () => JSON.stringify([main_api, oai_settings.chat_completion_source, oai_settings.vertexai_auth_mode,
-            oai_settings.vertexai_region, secret_state.vertexai_service_account_json?.find(entry => entry.active)?.id]),
-        onRefresh: async (source, { signal }) => {
-            const request = { chat_completion_source: source, vertexai_auth_mode: oai_settings.vertexai_auth_mode,
-                vertexai_region: oai_settings.vertexai_region,
-                secret_id: secret_state.vertexai_service_account_json?.find(entry => entry.active)?.id };
-            return fetchModelList(request, { headers: getRequestHeaders(), signal });
-        },
-    });
+    const nativeModels = installNativeModelControls({ onOpen: openModels, onError: showError });
     const nativeChat = installNativeChatUi({ onError: showError });
     removers.push(nativeModels.cleanup, nativeChat.cleanup);
     const removePickers = installApiSelects({ onError: showError });

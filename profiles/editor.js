@@ -321,15 +321,14 @@ export async function editProfile(profile, { runtime, vault, models, parameterPr
         refreshModelSuggestions();
         refreshModelLoading();
     }
-    const canFetchModels = () => supportsModelDiscovery(source.value, { vertexai_auth_mode: vertexMode.value });
+    const canFetchModels = () => supportsModelDiscovery(source.value);
     const fetchModels = button('拉取模型', async () => {
         if (modelController && !modelController.signal.aborted) return;
         refreshModelContext();
         if (!canFetchModels()) {
             model.focus({ preventScroll: true });
             const entries = refreshModelSuggestions({ open: true });
-            setModelStatus(source.value === 'vertexai' ? '已刷新本地模型。联网更新目录需要 Full 服务账号，Express API Key 不支持此目录。'
-                : entries.length ? `已刷新 ${entries.length} 个内置或已保存模型；可选择，也可填写模型 ID。`
+            setModelStatus(entries.length ? `已刷新 ${entries.length} 个内置或已保存模型；可选择，也可填写模型 ID。`
                 : '此来源没有可用的内置或已保存模型，请填写模型 ID。');
             return;
         }
@@ -341,7 +340,7 @@ export async function editProfile(profile, { runtime, vault, models, parameterPr
         try {
             const selectedSource = source.value;
             if (binding && !secret_state[binding.key]?.some(entry => entry.id === binding.id)) throw new Error('选择的密钥已删除，请重新选择。');
-            if (selectedSource !== 'vertexai' && binding && !supportsRequestSecretId() && !secret_state[binding.key]?.some(entry => entry.id === binding.id && entry.active)) {
+            if (binding && !supportsRequestSecretId() && !secret_state[binding.key]?.some(entry => entry.id === binding.id && entry.active)) {
                 throw new Error('当前酒馆版本只能用已激活的密钥拉取模型，请先切换到此密钥后重试。');
             }
             const request = { chat_completion_source: selectedSource, reverse_proxy: '', proxy_password: '' };
@@ -363,10 +362,8 @@ export async function editProfile(profile, { runtime, vault, models, parameterPr
                 Object.assign(request, { custom_url: apiRoot, custom_include_headers: headers,
                     custom_auth: { version: 1, auth, credential } });
             } else {
-                if (binding && binding.key !== sourceKey(selectedSource, { ...initialFields, vertexai_auth_mode: vertexMode.value })) throw new Error('密钥服务与 API 来源不同，请重新选择。');
+                if (binding && binding.key !== sourceKey(selectedSource)) throw new Error('密钥服务与 API 来源不同，请重新选择。');
                 if (binding) request.secret_id = binding.id;
-                if (selectedSource === 'vertexai') Object.assign(request, { vertexai_auth_mode: vertexMode.value,
-                    vertexai_region: region.value.trim(), vertexai_express_project_id: project.value.trim() });
                 if (selectedSource === 'azure_openai') Object.assign(request, Object.fromEntries(Object.entries(azureFields).map(([key, input]) => [key, input.value.trim()])));
                 Object.assign(request, Object.fromEntries(Object.entries(discoveryFields[selectedSource] ?? {}).map(([key, input]) => [key, input.value.trim()])));
                 if (selectedSource === 'workers_ai' && !request.workers_ai_account_id) throw new Error('请填写 Cloudflare 账号 ID。');
