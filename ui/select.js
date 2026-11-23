@@ -1,4 +1,4 @@
-
+import { createPickerPositioner } from './picker-position.js';
 
 const DEFAULT_SELECTORS = [
     '#connection_profiles',
@@ -207,7 +207,6 @@ export function installSearchableSelects({ root = document, selectors = DEFAULT_
     const pickers = new Map();
     let opened = null;
     let scanTimer = null;
-    let positionFrame = null;
     let destroyed = false;
 
     function report(error) {
@@ -305,8 +304,7 @@ export function installSearchableSelects({ root = document, selectors = DEFAULT_
         status.setAttribute('aria-live', 'polite');
         footer.append(status);
         panel.append(searchRow, list, footer);
-        const popover = typeof panel.showPopover === 'function';
-        if (popover) panel.setAttribute('popover', 'manual');
+        const positioning = createPickerPositioner(panel, trigger);
         (select.closest('dialog') ?? documentRef.body).append(panel);
         if (!nativeControl) {
             select.after(wrapper);
@@ -389,33 +387,12 @@ export function installSearchableSelects({ root = document, selectors = DEFAULT_
         }
 
         function position() {
-            if (panel.hidden) return;
-            const rect = trigger.getBoundingClientRect();
-            const viewportHeight = windowRef.visualViewport?.height ?? windowRef.innerHeight;
-            const viewportWidth = windowRef.visualViewport?.width ?? windowRef.innerWidth;
-            const viewportTop = windowRef.visualViewport?.offsetTop ?? 0;
-            const viewportLeft = windowRef.visualViewport?.offsetLeft ?? 0;
-            const width = Math.max(0, Math.min(rect.width, viewportWidth - 16));
-            const below = viewportTop + viewportHeight - rect.bottom - 8;
-            const above = rect.top - viewportTop - 8;
-            const useAbove = below < 240 && above > below;
-            const height = Math.max(64, Math.min(430, useAbove ? above : below));
-            panel.style.width = `${width}px`;
-            panel.style.maxHeight = `${height}px`;
-            const left = Math.max(viewportLeft + 8, Math.min(rect.left, viewportLeft + viewportWidth - width - 8));
-            const top = Math.max(viewportTop + 8, useAbove ? rect.top - panel.getBoundingClientRect().height - 4 : rect.bottom + 4);
-            const owner = popover ? null : select.closest('dialog');
-            const ownerRect = owner?.getBoundingClientRect();
-            panel.style.position = owner ? 'absolute' : 'fixed';
-            panel.style.left = `${owner ? left - ownerRect.left - owner.clientLeft + owner.scrollLeft : left}px`;
-            panel.style.top = `${owner ? top - ownerRect.top - owner.clientTop + owner.scrollTop : top}px`;
-            panel.style.bottom = '';
+            positioning.position();
         }
 
         function close({ focus = false } = {}) {
             if (panel.hidden) return;
-            if (popover && panel.matches(':popover-open')) panel.hidePopover();
-            panel.hidden = true;
+            positioning.hide();
             updateGroupState();
             trigger.setAttribute('aria-expanded', 'false');
             search.setAttribute('aria-expanded', 'false');
@@ -637,8 +614,7 @@ export function installSearchableSelects({ root = document, selectors = DEFAULT_
             const panelOwner = select.closest('dialog') ?? documentRef.body;
             if (panel.parentElement !== panelOwner) panelOwner.append(panel);
             syncTheme();
-            panel.hidden = false;
-            if (popover) panel.showPopover();
+            positioning.show();
             trigger.setAttribute('aria-expanded', 'true');
             search.setAttribute('aria-expanded', 'true');
             search.value = '';
@@ -764,6 +740,7 @@ export function installSearchableSelects({ root = document, selectors = DEFAULT_
             if (stopped) return;
             stopped = true;
             close();
+            positioning.cleanup();
             observer.disconnect();
             resizeObserver?.disconnect();
             if (updateTimer !== null) windowRef.clearTimeout(updateTimer);
@@ -855,19 +832,8 @@ export function installSearchableSelects({ root = document, selectors = DEFAULT_
     const onFocus = event => {
         if (opened && !opened.wrapper.contains(event.target) && !opened.panel.contains(event.target)) opened.close();
     };
-    const onPosition = event => {
-        if (!opened || event?.type === 'scroll' && opened.panel.contains(event.target) || positionFrame !== null) return;
-        positionFrame = windowRef.requestAnimationFrame(() => {
-            positionFrame = null;
-            opened?.position();
-        });
-    };
     documentRef.addEventListener('pointerdown', onOutside, true);
     documentRef.addEventListener('focusin', onFocus);
-    documentRef.addEventListener('scroll', onPosition, true);
-    windowRef.addEventListener('resize', onPosition);
-    windowRef.visualViewport?.addEventListener('resize', onPosition);
-    windowRef.visualViewport?.addEventListener('scroll', onPosition);
     observer.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['hidden', 'class', 'id', 'multiple', 'style'] });
     const poll = windowRef.setInterval(() => {
         if (documentRef.hidden) return;
@@ -885,13 +851,8 @@ export function installSearchableSelects({ root = document, selectors = DEFAULT_
         if (themeTimer !== null) windowRef.clearTimeout(themeTimer);
         windowRef.clearInterval(poll);
         if (scanTimer !== null) windowRef.clearTimeout(scanTimer);
-        if (positionFrame !== null) windowRef.cancelAnimationFrame(positionFrame);
         documentRef.removeEventListener('pointerdown', onOutside, true);
         documentRef.removeEventListener('focusin', onFocus);
-        documentRef.removeEventListener('scroll', onPosition, true);
-        windowRef.removeEventListener('resize', onPosition);
-        windowRef.visualViewport?.removeEventListener('resize', onPosition);
-        windowRef.visualViewport?.removeEventListener('scroll', onPosition);
         for (const picker of [...pickers.values()]) picker.destroy();
     };
 }

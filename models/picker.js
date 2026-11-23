@@ -1,5 +1,6 @@
 import { groupModelEntries } from './grouping.js';
 import { syncPickerTheme } from '../ui/select.js';
+import { createPickerPositioner } from '../ui/picker-position.js';
 
 let nextId = 0;
 const WINDOW_SIZE = 80;
@@ -52,6 +53,7 @@ export function installModelPicker(input, { groupButtonStyle = 'icon' } = {}) {
     list.setAttribute('aria-label', '模型选项');
     panel.append(list);
     wrapper.append(panel);
+    const positioning = createPickerPositioner(panel, wrapper, { maxHeight: 320 });
 
     let entries = [], foundEntries = [], matches = [], rows = new Map(), headings = [], highlighted = -1, stopped = false, choosing = false;
     let currentQuery = '', filteredValue = null, activeGroupKey = null;
@@ -67,7 +69,7 @@ export function installModelPicker(input, { groupButtonStyle = 'icon' } = {}) {
         listeners.push(() => target.removeEventListener(type, callback, options));
     };
     function close() {
-        panel.hidden = true;
+        positioning.hide();
         input.setAttribute('aria-expanded', 'false');
         toggle.setAttribute('aria-expanded', 'false');
         input.removeAttribute('aria-activedescendant');
@@ -84,18 +86,7 @@ export function installModelPicker(input, { groupButtonStyle = 'icon' } = {}) {
         pickerRow.classList.toggle('has-group-controls', !groupState.hidden);
     }
     function position() {
-        if (panel.hidden) return;
-        const rect = wrapper.getBoundingClientRect();
-        const viewport = windowRef.visualViewport;
-        const top = viewport?.offsetTop ?? 0, left = viewport?.offsetLeft ?? 0;
-        const height = viewport?.height ?? windowRef.innerHeight, width = viewport?.width ?? windowRef.innerWidth;
-        const below = top + height - rect.bottom - 8, above = rect.top - top - 8;
-        const useAbove = below < 240 && above > below;
-        panel.style.width = `${Math.min(rect.width, width - 16)}px`;
-        panel.style.maxHeight = `${Math.max(0, Math.min(320, useAbove ? above : below))}px`;
-        panel.style.left = `${Math.max(left + 8, Math.min(rect.left, left + width - rect.width - 8))}px`;
-        panel.style.top = useAbove ? '' : `${rect.bottom + 4}px`;
-        panel.style.bottom = useAbove ? `${windowRef.innerHeight - rect.top + 4}px` : '';
+        positioning.position();
     }
     function highlight(index, scroll = false, trackGroup = true) {
         rows.get(highlighted)?.classList.remove('cw-picker-highlighted');
@@ -236,6 +227,7 @@ export function installModelPicker(input, { groupButtonStyle = 'icon' } = {}) {
         renderWindow(true);
         highlight(highlighted, !preserveScroll && visibleRows.length > WINDOW_SIZE, !preserveScroll);
         syncGroupState();
+        position();
     }
     function foldGroup(key, force, focus = false) {
         if (key == null || currentQuery.trim()) return;
@@ -247,11 +239,9 @@ export function installModelPicker(input, { groupButtonStyle = 'icon' } = {}) {
     }
     function open(query = '') {
         if (stopped || !entries.length || input.disabled) return;
-        // Keep the panel in the owning dialog's top layer, outside its scrolling content.
-        const owner = input.closest('dialog') ?? wrapper;
+        const owner = input.closest('dialog') ?? documentRef.body;
         if (panel.parentElement !== owner) { owner.append(panel); themeDirty = true; }
-        const opening = panel.hidden;
-        if (!opening && !themeDirty && query === currentQuery && filteredValue === input.value) return;
+        if (!panel.hidden && !themeDirty && query === currentQuery && filteredValue === input.value) return;
         if (themeDirty) {
             const style = windowRef.getComputedStyle(input);
             panel.style.fontFamily = style.fontFamily;
@@ -273,10 +263,9 @@ export function installModelPicker(input, { groupButtonStyle = 'icon' } = {}) {
             } finally { probe.remove(); }
             themeDirty = false;
         }
-        panel.hidden = false;
+        positioning.show();
         input.setAttribute('aria-expanded', 'true');
         toggle.setAttribute('aria-expanded', 'true');
-        if (opening) position();
         filter(query);
     }
     function choose(index) {
@@ -374,11 +363,6 @@ export function installModelPicker(input, { groupButtonStyle = 'icon' } = {}) {
         themeDirty = true;
         if (!panel.hidden) { open(currentQuery); position(); }
     });
-    listen(windowRef, 'scroll', event => { if (!panel.contains(event.target)) position(); }, true);
-    if (windowRef.visualViewport) {
-        listen(windowRef.visualViewport, 'resize', position);
-        listen(windowRef.visualViewport, 'scroll', position);
-    }
     let themeTimer = null;
     const themeObserver = windowRef.MutationObserver ? new windowRef.MutationObserver(() => {
         themeDirty = true;
@@ -422,6 +406,7 @@ export function installModelPicker(input, { groupButtonStyle = 'icon' } = {}) {
         cleanup() {
             if (stopped) return;
             clear(); stopped = true;
+            positioning.cleanup();
             themeObserver?.disconnect();
             if (themeTimer !== null) windowRef.clearTimeout(themeTimer);
             if (scrollFrame !== null) windowRef.cancelAnimationFrame(scrollFrame);
