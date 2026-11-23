@@ -1,4 +1,4 @@
-import { eventSource, saveSettings, saveSettingsDebounced, getRequestHeaders, resultCheckStatus, main_api } from '../../../../../script.js';
+import { eventSource, saveSettings, saveSettingsDebounced, settings, getRequestHeaders, resultCheckStatus, main_api } from '../../../../../script.js';
 import { cancelStatusCheck } from '../compat/status.js';
 import { event_types } from '../compat/events.js';
 import { extension_settings } from '../../../../extensions.js';
@@ -8,15 +8,18 @@ import { SECRET_KEYS, secret_state, readSecretState, rotateSecret, resolveSecret
 import { captureCustomFields, normalizeCustomEndpoint, validateCustomSnapshot } from '../compat/custom-connection.js';
 import { SlashCommandParser } from '../../../../slash-commands/SlashCommandParser.js';
 import { SlashCommandScope } from '../../../../slash-commands/SlashCommandScope.js';
-import { uuidv4 } from '../../../../utils.js';
+import { uuidv4, cancelDebounce } from '../../../../utils.js';
 import { PROFILE_FIELD, captureMetadata, ensureNoProxyPreset, normalizeMetadata, profileSource, profileProblems, emptyConnectionFields, emptyCustomConnection, connectionDraftValue, draftFingerprint } from './state.js';
 import { CUSTOM_MODEL_SOURCES } from '../models/custom.js';
 import { rebindProfileSecret } from '../secrets/deduplication.js';
 import { createUsageHistory, observeUsageRequests } from './usage.js';
 import { readProfileGroups, sameProfileConnection, profileConnectionValue, shareProfileConnection, modelVariant, stableGroupValue } from './groups.js';
+import { saveProfileSettings } from './persistence.js';
 
 export function sourceKey(source, fields = {}) {
-    if (source === 'vertexai' && fields.vertexai_auth_mode === 'full') return SECRET_KEYS.VERTEXAI_SERVICE_ACCOUNT;
+    if (source === 'vertexai') return fields.vertexai_auth_mode === 'full'
+        ? SECRET_KEYS.VERTEXAI_SERVICE_ACCOUNT ?? 'vertexai_service_account_json'
+        : SECRET_KEYS.VERTEXAI ?? 'api_key_vertexai';
     return SECRET_KEYS[source?.toUpperCase()] ?? null;
 }
 
@@ -171,7 +174,8 @@ export function createProfileRuntime({ models, onError = console.error, onChange
             if (binding.mode === 'legacy-custom' && binding.id) return { key: SECRET_KEYS.CUSTOM, id: binding.id };
             return null;
         }
-        const key = resolveSecretKey();
+        // Resolve Vertex from this connection's auth mode; older hosts resolve only the Express key.
+        const key = main_api === 'openai' ? sourceKey(oai_settings.chat_completion_source, oai_settings) ?? resolveSecretKey() : resolveSecretKey();
         const id = secret_state[key]?.find(entry => entry.active)?.id;
         return id ? { key, id } : null;
     };
@@ -355,22 +359,10 @@ export function createProfileRuntime({ models, onError = console.error, onChange
         Object.assign(profile, structuredClone(value));
     };
 
-    async function verifySavedProfiles(expected, expectedProxy = null) {
-        let persisted = false;
-        const confirmed = () => { persisted = true; };
-        eventSource.on(event_types.SETTINGS_UPDATED, confirmed);
-        try {
-            const result = await saveSettings();
-            if (result === false || !persisted) throw new Error('连接方案未能保存，请重试。');
-            const response = await fetch('/api/settings/get', { method: 'POST', headers: getRequestHeaders(), body: '{}' });
-            if (!response.ok) throw new Error('无法确认连接方案已保存，请重试。');
-            const data = await response.json();
-            const saved = typeof data.settings === 'string' ? JSON.parse(data.settings) : data.settings;
-            const stored = saved?.extension_settings?.connectionManager?.profiles ?? [];
-            const indexed = indexProfiles(stored);
-            if (expected.some(value => stableGroupValue(indexed.get(value.id)) !== stableGroupValue(value))) throw new Error('连接方案未能完整保存，请重试。');
-            if (expectedProxy && stableGroupValue(saved?.proxies?.find(entry => entry.name === expectedProxy.name)) !== stableGroupValue(expectedProxy)) throw new Error('当前代理设置未能完整保存，请重试。');
-        } finally { eventSource.removeListener(event_types.SETTINGS_UPDATED, confirmed); }
+    async function verifySavedProfiles(expected, expectedProxy = null, expectedGroups = null) {
+        await saveProfileSettings({ save: saveSettings, cancelPending: () => cancelDebounce(saveSettingsDebounced),
+            events: eventSource, savedEvent: event_types.SETTINGS_UPDATED, getSavedSettings: () => settings,
+            expectedProfiles: expected, expectedProxy, expectedGroups });
     }
 
     async function saveGroupConnection(profile, previous, next, expectedProxy = null) {
@@ -391,23 +383,10 @@ export function createProfileRuntime({ models, onError = console.error, onChange
                 changes.push({ profile: sibling, previous: structuredClone(sibling), next: value });
             }
         }
-        let persisted = false;
-        const confirmed = () => { persisted = true; };
         savingGroup = true;
-        eventSource.on(event_types.SETTINGS_UPDATED, confirmed);
         try {
             for (const change of changes) replaceProfile(change.profile, change.next);
-            const result = await saveSettings();
-            if (result === false || !persisted) throw new Error('连接组未能保存，请重试。');
-            const response = await fetch('/api/settings/get', { method: 'POST', headers: getRequestHeaders(), body: '{}' });
-            if (!response.ok) throw new Error('无法确认连接组已保存，请重试。');
-            const data = await response.json();
-            const saved = typeof data.settings === 'string' ? JSON.parse(data.settings) : data.settings;
-            const savedProfiles = saved?.extension_settings?.connectionManager?.profiles ?? [];
-            const indexed = indexProfiles(savedProfiles);
-            if (changes.some(change => stableGroupValue(indexed.get(change.next.id)) !== stableGroupValue(change.next))
-                || sourceChanged && stableGroupValue(saved?.extension_settings?.connectionWorkbench?.groups) !== stableGroupValue(groupSettings().groups)) throw new Error('连接组未能完整保存，请重试。');
-            if (expectedProxy && stableGroupValue(saved?.proxies?.find(entry => entry.name === expectedProxy.name)) !== stableGroupValue(expectedProxy)) throw new Error('当前代理设置未能完整保存，请重试。');
+            await verifySavedProfiles(changes.map(change => change.next), expectedProxy, sourceChanged ? groupSettings().groups : null);
         } catch (error) {
             for (const change of changes) replaceProfile(change.profile, change.previous);
             groupSettings().groups = oldGroups;
@@ -415,7 +394,6 @@ export function createProfileRuntime({ models, onError = console.error, onChange
             throw error;
         } finally {
             savingGroup = false;
-            eventSource.removeListener(event_types.SETTINGS_UPDATED, confirmed);
         }
         authored = true;
         try { for (const change of changes) await eventSource.emit(event_types.CONNECTION_PROFILE_UPDATED, change.previous, change.profile); }
@@ -470,7 +448,9 @@ export function createProfileRuntime({ models, onError = console.error, onChange
             restoreCustomConnection(snapshot);
             if (snapshot.credential.mode === 'reference' || snapshot.credential.mode === 'legacy-custom' && snapshot.credential.id) {
                 const release = pauseLegacyRequests();
-                try { await rotateSecret(SECRET_KEYS.CUSTOM, snapshot.credential.id); }
+                try {
+                    if (!secret_state[SECRET_KEYS.CUSTOM]?.some(entry => entry.id === snapshot.credential.id && entry.active)) await rotateSecret(SECRET_KEYS.CUSTOM, snapshot.credential.id);
+                }
                 finally { release(); }
                 if (!secret_state[SECRET_KEYS.CUSTOM]?.some(entry => entry.id === snapshot.credential.id && entry.active)) throw new Error('密钥未能切换，请重试。');
             }
@@ -485,7 +465,7 @@ export function createProfileRuntime({ models, onError = console.error, onChange
         }
         if (metadata.source === 'vertexai') $('#vertexai_auth_mode').trigger('change');
         if (metadata.source !== 'custom' && metadata.credential) {
-            await rotateSecret(metadata.credential.key, metadata.credential.id);
+            if (!secret_state[metadata.credential.key]?.some(entry => entry.id === metadata.credential.id && entry.active)) await rotateSecret(metadata.credential.key, metadata.credential.id);
             if (!secret_state[metadata.credential.key]?.some(entry => entry.id === metadata.credential.id && entry.active)) throw new Error('密钥未能切换，请重试。');
         }
         if (models && Object.hasOwn(CUSTOM_MODEL_SOURCES, metadata.source) && metadata.model && models.list(metadata.source).some(entry => entry.id === metadata.model)) models.select(metadata.source, metadata.model);
@@ -924,8 +904,9 @@ export function createProfileRuntime({ models, onError = console.error, onChange
                 catch (error) { replaceProfile(profile, old); saveSettingsDebounced(); throw error; }
             }
             authored = true;
+            const persistedValue = verifyPersistence ? stableGroupValue(profile) : null;
             try { await eventSource.emit(event_types.CONNECTION_PROFILE_UPDATED, old, profile); } finally { authored = false; }
-            saveSettingsDebounced();
+            if (!verifyPersistence || stableGroupValue(profile) !== persistedValue) saveSettingsDebounced();
             syncProfileList();
         },
         async remove(profile) {

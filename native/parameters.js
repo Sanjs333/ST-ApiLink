@@ -6,7 +6,7 @@ const HIDDEN_CLASS = 'cw-native-parameter-entry-hidden';
 export function installNativeParameterPresets({ store, getSource, readFields, writeFields, root = document, onError } = {}) {
     const documentRef = root.ownerDocument ?? root;
     const windowRef = documentRef.defaultView;
-    const controls = createParameterPresetControls({ store, readFields, writeFields, onError });
+    const controls = createParameterPresetControls({ store, readFields, writeFields, onError, searchable: false });
     controls.root.classList.add('cw-native-parameter-presets');
     controls.root.id = 'connection-workbench-parameter-presets';
     const nativeEntries = new Map();

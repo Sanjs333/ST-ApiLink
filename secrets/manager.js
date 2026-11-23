@@ -46,6 +46,81 @@ export function createSecretManager(runtime, onError = showError) {
         finally { data.value = ''; }
     }
 
+    async function edit(entry, presentation) {
+        const current = secret_state[entry.key]?.find(item => item.id === entry.id);
+        if (!current) throw new Error('此密钥已不存在，请刷新列表。');
+        const root = element('div', { class: 'cw-dialog cw-editor cw-secret-editor' });
+        const label = element('input', { class: 'text_pole', value: current.label ?? '', placeholder: presentation.targetName ?? '密钥名称', autocomplete: 'off', 'aria-label': '密钥名称' });
+        const value = element('textarea', { class: 'text_pole', rows: entry.key === SECRET_KEYS.VERTEXAI_SERVICE_ACCOUNT ? 10 : 3,
+            readOnly: true, autocomplete: 'off', spellcheck: false, placeholder: '正在读取…', 'aria-label': '密钥内容' });
+        const status = element('div', { class: 'cw-progress cw-note', role: 'status', 'aria-live': 'polite' });
+        const state = { closed: false, controller: new AbortController() };
+        sessions.add(state);
+        let saving = false, loaded = false;
+        const copy = button('复制密钥内容', guarded(async () => {
+            await navigator.clipboard.writeText(value.value);
+            status.textContent = '已复制密钥内容。';
+        }), '', { textOnly: true });
+        copy.disabled = true;
+        const save = button('保存名称', async () => {
+            if (saving || disposed || state.closed) return;
+            try {
+                if (!label.value.trim()) throw new Error('请输入密钥名称。');
+                saving = true;
+                label.disabled = save.disabled = true;
+                if (label.value.trim() !== current.label) {
+                    await mutate('rename', { key: entry.key, id: entry.id, label: label.value.trim() });
+                    await readSecretState();
+                    await eventSource.emit(event_types.SECRET_EDITED, entry.key);
+                }
+                root.closest('dialog')?.querySelector('.popup-button-ok')?.click();
+            } catch (error) { status.textContent = error.message; onError(error); }
+            finally { saving = false; label.disabled = save.disabled = false; }
+        }, '', { textOnly: true });
+        root.append(element('h3', { text: '编辑密钥' }),
+            element('div', { class: 'cw-fields' }, [field('所属服务', element('span', { text: secretName(entry.key) })),
+                field('记录 ID', element('input', { class: 'text_pole', value: entry.id, readOnly: true })), field('名称', label),
+                field('关联方案', element('span', { text: presentation.referenceNames || '未被方案引用' })),
+                field(entry.key === SECRET_KEYS.VERTEXAI_SERVICE_ACCOUNT ? 'Service Account JSON（只读）' : '密钥内容（只读）', value)]),
+            status, element('div', { class: 'cw-footer' }, [copy, save]));
+        try {
+            const closed = dialog(root, { okButton: '关闭', onClosing: () => {
+                if (saving) return false;
+                state.closed = true;
+                state.controller.abort();
+                value.value = '';
+                loaded = false;
+                copy.disabled = true;
+                return true;
+            } });
+            void inspectSecret('find', { key: entry.key, id: entry.id }, state.controller.signal).then(data => {
+                try {
+                    if (state.closed || disposed) return;
+                    if (typeof data?.value !== 'string') throw new Error('密钥已不存在或无法读取，请刷新后重试。');
+                    value.value = data.value;
+                    value.placeholder = '';
+                    loaded = true;
+                    copy.disabled = false;
+                } finally { if (data) data.value = ''; }
+            }).catch(error => {
+                if (state.closed || disposed) return;
+                value.placeholder = '无法读取密钥内容';
+                status.textContent = error.status === 403 ? '查看密钥内容需要在酒馆 config.yaml 开启 allowKeysExposure: true，并重启酒馆。' : error.message;
+            });
+            await closed;
+        } finally {
+            state.closed = true;
+            state.controller.abort();
+            value.value = '';
+            loaded = false;
+            copy.disabled = true;
+            sessions.delete(state);
+        }
+        function guarded(action) {
+            return async () => { if (!loaded || state.closed || disposed) return; try { await action(); } catch { status.textContent = '复制失败，请选中内容手动复制。'; } };
+        }
+    }
+
     async function add(defaultKey = SECRET_KEYS.CUSTOM, allowedKeys = MANAGED_SECRET_KEYS) {
         const root = element('div', { class: 'cw-dialog cw-editor cw-secret-editor' });
         const category = element('select', { class: 'text_pole' }, allowedKeys.map(key => new Option(secretName(key), key)));
@@ -440,12 +515,8 @@ export function createSecretManager(runtime, onError = showError) {
                     element('small', { class: 'cw-note cw-usage-note', text: '最近使用：' + usage.text, title: usage.title }));
                 if (duplicateNotes.has(token)) info.append(element('small', { class: 'cw-warning', text: duplicateNotes.get(token) }));
                 const actions = element('div', { class: 'cw-row-actions' });
-                actions.append(button('改名', guarded(async () => {
-                    const label = await Popup.show.input('密钥改名', presentation.targetName ? '已预填关联方案名，也可输入自定义名称。' : '请输入便于辨认的名称', (presentation.targetName ?? entry.label) || '', themedPopupOptions());
-                    if (!label || !String(label).trim()) return;
-                    await mutate('rename', { key: entry.key, id: entry.id, label: String(label).trim() });
-                    await readSecretState();
-                    await eventSource.emit(event_types.SECRET_EDITED, entry.key);
+                actions.append(button('编辑', guarded(async () => {
+                    await edit(entry, presentation);
                     render();
                 })));
                 for (const child of actions.children) child.disabled = state.busy;

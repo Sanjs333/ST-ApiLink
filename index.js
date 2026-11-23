@@ -672,7 +672,7 @@ export async function init() {
             if (!pendingProfileSwitch && !pendingProfileSave) void guarded(saveCurrentAsProfile)();
             return;
         }
-        if (event.target.closest?.('#update_connection_profile') && main_api === 'openai' && !runtime.selected()) {
+        if (event.target.closest?.('#update_connection_profile') && main_api === 'openai' && (!runtime.selected() || runtime.selected()?.mode === 'cc')) {
             event.preventDefault(); event.stopImmediatePropagation();
             if (pendingProfileSwitch || pendingProfileSave) return;
             pendingProfileSave = true; renderStatus();
@@ -682,7 +682,10 @@ export async function init() {
             releaseApiSave = () => { if (api) api.inert = wasInert; releaseApiSave = null; };
             void guarded(async () => {
                 try {
-                    if (runtime.newConnectionName?.()) {
+                    if (runtime.selected()) {
+                        await runtime.saveCurrentToSelected();
+                        toastr.success('连接方案已保存。', 'API 连接管理');
+                    } else if (runtime.newConnectionName?.()) {
                         await runtime.saveNewConnection();
                         toastr.success('连接方案已保存。', 'API 连接管理');
                     } else await saveCurrentAsProfile();
