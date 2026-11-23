@@ -84,7 +84,7 @@ export function createUsageHistory({ getSettings, save, now = Date.now }) {
     };
 }
 
-const PROXY_AUTH_SOURCES = new Set(['openai', 'claude', 'mistralai', 'makersuite', 'vertexai', 'deepseek', 'xai', 'zai', 'moonshot']);
+export const PROXY_AUTH_SOURCES = new Set(['openai', 'claude', 'mistralai', 'makersuite', 'vertexai', 'deepseek', 'xai', 'zai', 'moonshot']);
 
 /** Resolve the dispatched request, not the connection currently displayed in the UI. */
 export function requestSecretReference(data, vault, resolveSourceKey) {

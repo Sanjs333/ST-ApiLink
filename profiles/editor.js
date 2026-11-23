@@ -15,7 +15,6 @@ import { element, button, dialog, showError, themedPopupOptions } from '../ui/co
 import { fetchModelList, mergeModelSuggestions, supportsModelDiscovery } from '../models/discovery.js';
 import { installModelPicker } from '../models/picker.js';
 import { manageProxyPresets } from './proxies.js';
-import { sameProfileConnection } from './groups.js';
 import { createParameterPresetControls } from '../parameters/editor.js';
 import { installSearchableSelects } from '../ui/select.js';
 
@@ -60,7 +59,7 @@ export async function editProfile(profile, { runtime, vault, models, parameterPr
     const connectionGroup = runtime.groupFor?.(profile);
     if (connectionGroup) controls.append(element('div', {
         class: 'cw-note cw-group-editor-note',
-        text: `连接组「${connectionGroup.name}」：地址、密钥和代理等连接设置会同步组内方案；模型、名称和附加参数独立保存。更换 API 来源会将此方案移出连接组。`,
+        text: `连接组「${connectionGroup.name}」按地址归类；此方案的密钥、模型、API 来源、代理和附加参数独立保存。更换到其他地址时，此方案会移出原组。`,
     }));
     const status = element('div', { class: 'cw-progress cw-note', role: 'status' });
     const modelStatus = element('span', { class: 'cw-model-status cw-note', role: 'status' });
@@ -495,9 +494,7 @@ export async function editProfile(profile, { runtime, vault, models, parameterPr
                 if (updated.model && Object.hasOwn(CUSTOM_MODEL_SOURCES, selectedSource)) models.ensureOption(selectedSource, updated.model);
                 await runtime.save(profile, updated);
                 const current = runtime.selected();
-                const sharedConnectionChanged = connectionGroup && runtime.groupFor?.(profile)?.id === connectionGroup.id
-                    && !sameProfileConnection(original, profile);
-                if (current && (current.id === profile.id || sharedConnectionChanged && connectionGroup.profileIds.includes(current.id))) await runtime.select(current, { skipUnsavedCheck: true });
+                if (current?.id === profile.id) await runtime.select(current, { skipUnsavedCheck: true });
             }
             root.closest('dialog')?.querySelector('.popup-button-ok')?.click();
         } catch (error) { status.textContent = error.message; onError(error); }

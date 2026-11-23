@@ -13,7 +13,7 @@ import { PROFILE_FIELD, captureMetadata, ensureNoProxyPreset, normalizeMetadata,
 import { CUSTOM_MODEL_SOURCES } from '../models/custom.js';
 import { rebindProfileSecret } from '../secrets/deduplication.js';
 import { createUsageHistory, observeUsageRequests } from './usage.js';
-import { readProfileGroups, sameProfileConnection, profileConnectionValue, shareProfileConnection, modelVariant, stableGroupValue } from './groups.js';
+import { readProfileGroups, sameProfileAddress, modelVariant, stableGroupValue } from './groups.js';
 import { saveProfileSettings } from './persistence.js';
 
 export function sourceKey(source, fields = {}) {
@@ -122,7 +122,7 @@ export function createProfileRuntime({ models, onError = console.error, onChange
         const targetIds = new Set(target?.profileIds), selectedIds = new Set(ids);
         const members = target ? profiles().filter(profile => targetIds.has(profile.id) && !selectedIds.has(profile.id)) : [];
         const base = members[0] ?? entries[0];
-        if (target && [...members, ...entries].some(profile => !sameProfileConnection(base, profile))) throw new Error('只有来源、地址、密钥和代理相同的方案才能归入同一连接组。');
+        if (target && [...members, ...entries].some(profile => !sameProfileAddress(base, profile, proxies))) throw new Error('只有地址相同的方案才能归入同一连接组；未填写地址的原生服务按来源和地址设置识别。');
         const moving = new Set(entries.map(profile => profile.id));
         for (const group of list) group.profileIds = group.profileIds.filter(id => !moving.has(id));
         if (target) target.profileIds.push(...moving);
@@ -132,7 +132,7 @@ export function createProfileRuntime({ models, onError = console.error, onChange
     const createGroup = (name, ids) => {
         name = checkGroupName(name);
         const entries = groupRecords(ids);
-        if (entries.some(profile => !sameProfileConnection(entries[0], profile))) throw new Error('只有来源、地址、密钥和代理相同的方案才能创建同一连接组。');
+        if (entries.some(profile => !sameProfileAddress(entries[0], profile, proxies))) throw new Error('只有地址相同的方案才能创建同一连接组；未填写地址的原生服务按来源和地址设置识别。');
         const list = groups(), moving = new Set(entries.map(profile => profile.id));
         for (const group of list) group.profileIds = group.profileIds.filter(id => !moving.has(id));
         const group = { id: uuidv4(), name, profileIds: [...moving] };
@@ -365,30 +365,18 @@ export function createProfileRuntime({ models, onError = console.error, onChange
             expectedProfiles: expected, expectedProxy, expectedGroups });
     }
 
-    async function saveGroupConnection(profile, previous, next, expectedProxy = null) {
+    async function saveGroupMembership(profile, previous, next, expectedProxy = null) {
         const group = groupFor(profile);
-        if (!group || stableGroupValue(profileConnectionValue(previous)) === stableGroupValue(profileConnectionValue(next))) return false;
+        if (!group || groupable(next) && sameProfileAddress(previous, next, proxies)) return false;
         if (savingGroup) throw new Error('连接组正在保存，请稍后再试。');
         const oldGroups = structuredClone(groupSettings().groups ?? []);
-        const sourceChanged = profileSource(previous) !== profileSource(next);
-        const changes = [{ profile, previous, next }];
-        if (sourceChanged) {
-            groupSettings().groups = groups().map(entry => ({ ...entry, profileIds: entry.profileIds.filter(id => id !== profile.id) }));
-        } else {
-            const memberIds = new Set(group.profileIds);
-            for (const sibling of profiles().filter(entry => entry.id !== profile.id && memberIds.has(entry.id))) {
-                const value = shareProfileConnection(next, sibling);
-                if (value[PROFILE_FIELD]) value[PROFILE_FIELD] = normalizeMetadata(value[PROFILE_FIELD]);
-                if (value['custom-connection'] && !value['custom-connection'].excluded) value['custom-connection'] = validateCustomSnapshot(value['custom-connection']);
-                changes.push({ profile: sibling, previous: structuredClone(sibling), next: value });
-            }
-        }
+        groupSettings().groups = groups().map(entry => ({ ...entry, profileIds: entry.profileIds.filter(id => id !== profile.id) }));
         savingGroup = true;
         try {
-            for (const change of changes) replaceProfile(change.profile, change.next);
-            await verifySavedProfiles(changes.map(change => change.next), expectedProxy, sourceChanged ? groupSettings().groups : null);
+            replaceProfile(profile, next);
+            await verifySavedProfiles([next], expectedProxy, groupSettings().groups);
         } catch (error) {
-            for (const change of changes) replaceProfile(change.profile, change.previous);
+            replaceProfile(profile, previous);
             groupSettings().groups = oldGroups;
             saveSettingsDebounced();
             throw error;
@@ -396,7 +384,7 @@ export function createProfileRuntime({ models, onError = console.error, onChange
             savingGroup = false;
         }
         authored = true;
-        try { for (const change of changes) await eventSource.emit(event_types.CONNECTION_PROFILE_UPDATED, change.previous, change.profile); }
+        try { await eventSource.emit(event_types.CONNECTION_PROFILE_UPDATED, previous, profile); }
         finally { authored = false; }
         syncProfileList();
         return true;
@@ -536,7 +524,7 @@ export function createProfileRuntime({ models, onError = console.error, onChange
         suppressMutationLoad(profile);
         if (authored) { pendingSync = true; return; }
         if (!authored && profile?.id === selected()?.id) attach(profile, { bindingSource: _old ?? profile });
-        if (!authored && _old && await saveGroupConnection(profile, _old, structuredClone(profile))) {
+        if (!authored && _old && await saveGroupMembership(profile, _old, structuredClone(profile))) {
             if (profile?.id === selected()?.id) markClean();
             return;
         }
@@ -590,8 +578,7 @@ export function createProfileRuntime({ models, onError = console.error, onChange
         groupCandidates(profile) {
             const base = typeof profile === 'string' ? profiles().find(entry => entry.id === profile) : profile;
             if (!groupable(base)) return [];
-            const value = stableGroupValue(profileConnectionValue(base));
-            return profiles().filter(entry => entry.id !== base.id && groupable(entry) && !groupFor(entry) && stableGroupValue(profileConnectionValue(entry)) === value);
+            return profiles().filter(entry => entry.id !== base.id && groupable(entry) && !groupFor(entry) && sameProfileAddress(base, entry, proxies));
         },
         renameGroup(id, name) {
             if (savingGroup) throw new Error('连接组正在保存，请稍后再试。');
@@ -844,7 +831,7 @@ export function createProfileRuntime({ models, onError = console.error, onChange
             } else { delete next['custom-connection']; delete next['api-url']; }
             if (metadata.credential && metadata.source !== 'vertexai' && metadata.credential.key === sourceKey(metadata.source, metadata.fields)) next['secret-id'] = metadata.credential.id;
             else delete next['secret-id'];
-            const proxyPlan = prepareDraftProxy(groupFor(profile)?.name ?? profile.name);
+            const proxyPlan = prepareDraftProxy(profile.name);
             metadata.proxy = proxyPlan.proxy;
             next.proxy = metadata.proxy.mode === 'none' ? noProxyName() : metadata.proxy.name;
             try { await runtime.save(profile, next, { verifyPersistence: true, expectedProxy: proxyPlan.expected }); }
@@ -895,7 +882,7 @@ export function createProfileRuntime({ models, onError = console.error, onChange
                 next.exclude = next.exclude.filter(field => field !== 'proxy');
             }
             const old = structuredClone(profile);
-            if (await saveGroupConnection(profile, old, next, expectedProxy)) return;
+            if (await saveGroupMembership(profile, old, next, expectedProxy)) return;
             // Edit by ID independently of selection; broken profiles remain editable and deletable.
             for (const field of Object.keys(profile)) if (!Object.hasOwn(next, field)) delete profile[field];
             Object.assign(profile, next);
@@ -957,7 +944,7 @@ export function createProfileRuntime({ models, onError = console.error, onChange
             let group = groupId ? groups().find(entry => entry.id === groupId) : groupFor(profile);
             if (groupId && !group) throw new Error('连接组已不存在。');
             const indexed = indexProfiles(profiles());
-            if (group && group.profileIds.some(id => !sameProfileConnection(profile, indexed.get(id)))) throw new Error('此方案与连接组的公共设置不同。');
+            if (group && group.profileIds.some(id => !sameProfileAddress(profile, indexed.get(id), proxies))) throw new Error('此方案与连接组的地址不同。');
             if (models && Object.hasOwn(CUSTOM_MODEL_SOURCES, profileSource(copy))) models.ensureOption(profileSource(copy), copy.model);
             const previousGroups = structuredClone(groupSettings().groups ?? []);
             if (!group) {

@@ -1,4 +1,5 @@
 import { PROFILE_FIELD, profileSource, draftFingerprint as stableGroupValue } from './state.js';
+import { PROXY_AUTH_SOURCES } from './usage.js';
 
 /** Keep usage order within connections and stable keys for continuous scrolling. */
 export function buildProfileGroupRows(profiles, groups, { collapsed = new Set(), searching = false, multi = false, emptyGroupIds = [] } = {}) {
@@ -33,56 +34,50 @@ export function buildProfileGroupRows(profiles, groups, { collapsed = new Set(),
 
 export { stableGroupValue };
 
-// Request extras belong to individual models; only transport and authentication are shared.
-const MODEL_FIELDS = new Set(['custom_model', 'custom_include_body', 'custom_include_headers', 'custom_exclude_body', 'custom_prompt_post_processing']);
-const SHARED_COMMANDS = ['api', 'api-url', 'secret-id', 'proxy', 'custom-connection'];
+function normalizeAddress(value) {
+    if (typeof value !== 'string' || !value.trim()) return null;
+    try {
+        const url = new URL(value.trim());
+        if (!['http:', 'https:'].includes(url.protocol)) return null;
+        url.username = ''; url.password = ''; url.hash = '';
+        return url.href.replace(/\/+$/, '');
+    } catch { return null; }
+}
 
-const connectionFields = fields => Object.fromEntries(Object.entries(fields ?? {}).filter(([key]) => !MODEL_FIELDS.has(key)));
-
-export function profileConnectionValue(profile) {
+/** A group organizes destinations; credentials and all request settings belong to each profile. */
+export function profileAddress(profile, proxyPresets = []) {
     const metadata = profile?.[PROFILE_FIELD];
     const snapshot = profile?.['custom-connection'];
-    return {
-        mode: profile?.mode,
-        source: profileSource(profile ?? {}),
-        fields: metadata ? connectionFields(metadata.fields) : { ...(profile?.['api-url'] !== undefined ? { custom_url: profile['api-url'] } : {}) },
-        credential: metadata?.credential ?? (profile?.['secret-id'] ? { id: profile['secret-id'] } : null),
-        proxy: metadata?.proxy ?? { mode: profile?.exclude?.includes('proxy') ? 'inherit' : 'native', name: profile?.proxy ?? '' },
-        snapshot: snapshot ? { excluded: snapshot.excluded, provider: snapshot.provider ? { id: snapshot.provider.id } : snapshot.provider, auth: snapshot.auth, credential: snapshot.credential, settings: connectionFields(snapshot.settings) } : null,
-        excluded: (profile?.exclude ?? []).filter(field => SHARED_COMMANDS.includes(field)).sort(),
-    };
-}
-
-export function sameProfileConnection(left, right) {
-    return left?.mode === 'cc' && right?.mode === 'cc' && stableGroupValue(profileConnectionValue(left)) === stableGroupValue(profileConnectionValue(right));
-}
-
-/** Copy transport settings without copying a sibling's model, request extras or foreign fields. */
-export function shareProfileConnection(source, target) {
-    const next = structuredClone(target);
-    for (const field of SHARED_COMMANDS.filter(field => field !== 'custom-connection')) {
-        if (Object.hasOwn(source, field)) next[field] = structuredClone(source[field]);
-        else delete next[field];
+    const source = profileSource(profile ?? {});
+    const fields = { ...metadata?.fields, ...(!snapshot?.excluded ? snapshot?.settings : {}) };
+    if (source === 'custom') return { address: normalizeAddress(fields.custom_url ?? profile?.['api-url']), sourceIfMissing: 'custom' };
+    if (source === 'azure_openai') return { address: normalizeAddress(fields.azure_base_url), sourceIfMissing: 'azure_openai' };
+    if (source === 'vertexai' && fields.vertexai_auth_mode === 'full') {
+        const region = (fields.vertexai_region || 'us-central1').trim().toLowerCase();
+        const host = region === 'global' ? 'aiplatform.googleapis.com' : `${region}-aiplatform.googleapis.com`;
+        return { address: normalizeAddress(`https://${host}/v1`) };
     }
-    next.exclude = [...new Set([...(target.exclude ?? []).filter(field => !SHARED_COMMANDS.includes(field)), ...(source.exclude ?? []).filter(field => SHARED_COMMANDS.includes(field))])];
-    if (source[PROFILE_FIELD]) {
-        const metadata = structuredClone(source[PROFILE_FIELD]);
-        const targetFields = target[PROFILE_FIELD]?.fields ?? target['custom-connection']?.settings ?? {};
-        metadata.model = target.model ?? target[PROFILE_FIELD]?.model ?? '';
-        metadata.fields = { ...connectionFields(metadata.fields), ...Object.fromEntries(Object.entries(targetFields).filter(([key]) => MODEL_FIELDS.has(key))) };
-        if (metadata.source === 'custom') metadata.fields.custom_model = metadata.model;
-        next[PROFILE_FIELD] = metadata;
-    } else delete next[PROFILE_FIELD];
-    if (source['custom-connection']) {
-        const snapshot = structuredClone(source['custom-connection']);
-        if (!snapshot.excluded) {
-            const targetFields = target['custom-connection']?.settings ?? target[PROFILE_FIELD]?.fields ?? {};
-            snapshot.settings = { ...snapshot.settings, ...Object.fromEntries(Object.entries(targetFields).filter(([key]) => MODEL_FIELDS.has(key))), custom_model: target.model ?? target[PROFILE_FIELD]?.model ?? '' };
-            if (target['custom-connection']?.models) snapshot.models = structuredClone(target['custom-connection'].models);
-        }
-        next['custom-connection'] = snapshot;
-    } else delete next['custom-connection'];
-    return next;
+    const proxy = metadata?.proxy ?? (profile?.exclude?.includes('proxy') ? { mode: 'inherit' }
+        : profile?.proxy ? { mode: 'preset', name: profile.proxy } : { mode: 'none' });
+    if (proxy.mode === 'preset' && PROXY_AUTH_SOURCES.has(source)) {
+        const preset = proxyPresets.find(entry => entry.name === proxy.name);
+        const address = normalizeAddress(preset?.url);
+        if (address) return { address };
+        if (!preset) return { address: null, sourceIfMissing: source };
+    }
+    if (proxy.mode === 'inherit' && PROXY_AUTH_SOURCES.has(source)) return { inheritedAddress: true, source };
+    if (source === 'vertexai') return { address: 'https://aiplatform.googleapis.com/v1' };
+    // Native services without a configured URL are identified by their source and endpoint settings.
+    return { nativeSource: source, endpoint: fields[`${source}_endpoint`] ?? null,
+        ...(source === 'workers_ai' ? { account: fields.workers_ai_account_id ?? '' } : {}) };
+}
+
+export function sameProfileAddress(left, right, proxyPresets = []) {
+    const leftAddress = profileAddress(left, proxyPresets), rightAddress = profileAddress(right, proxyPresets);
+    // Explicit URLs can be grouped across different API request formats.
+    if (Object.hasOwn(leftAddress, 'address') || Object.hasOwn(rightAddress, 'address')) return left?.mode === 'cc' && right?.mode === 'cc'
+        && Boolean(leftAddress.address && rightAddress.address && leftAddress.address === rightAddress.address);
+    return left?.mode === 'cc' && right?.mode === 'cc' && stableGroupValue(leftAddress) === stableGroupValue(rightAddress);
 }
 
 export function modelVariant(profile, { model, name, id }) {

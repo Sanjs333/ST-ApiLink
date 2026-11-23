@@ -61,7 +61,7 @@ export function createProfileGroupControls({ runtime, models = null, onChange = 
         const refresh = () => {
             const profile = profiles.find(entry => entry.id === base.value);
             const candidates = runtime.groupCandidates(profile).filter(entry => entry.id !== profile.id);
-            candidateNote.textContent = `同时归入使用相同连接的 ${candidates.length} 个方案`;
+            candidateNote.textContent = `同时归入地址相同的 ${candidates.length} 个方案`;
             include.disabled = !candidates.length;
             if (name.value === previousDefault) name.value = defaultGroupName(profile);
             previousDefault = defaultGroupName(profile);
@@ -77,7 +77,7 @@ export function createProfileGroupControls({ runtime, models = null, onChange = 
             } catch (error) { status.textContent = error.message; report(error); }
         }, '', { textOnly: true });
         root.append(element('h3', { text: '新建连接组' }), field('连接组名称', name), field('使用现有连接', base,
-            chosen.length > 1 ? `归入已选的 ${chosen.length} 个方案；它们须使用相同的连接。` : '地址、密钥和代理沿用现有方案。'),
+            chosen.length > 1 ? `归入已选的 ${chosen.length} 个方案；它们须使用相同地址。` : '按此方案的地址归组，每个方案独立保存密钥和其他设置。'),
         element('label', { class: 'cw-group-include' }, [include, candidateNote]), status,
         element('div', { class: 'cw-footer' }, [save]));
         refresh();
@@ -105,7 +105,7 @@ export function createProfileGroupControls({ runtime, models = null, onChange = 
             } catch (error) { status.textContent = error.message; report(error); }
         }, '', { textOnly: true });
         root.append(element('h3', { text: '归入连接组' }), field(`已选 ${profiles.length} 个方案`, target,
-            '同一组共享地址、密钥和代理；连接设置不同的方案请分别归组。'), nameField, status,
+            '同一地址可以归入同一组；密钥、模型、API 来源和其他设置各自保存。'), nameField, status,
         element('div', { class: 'cw-footer' }, [save]));
         await dialog(root);
     }
@@ -119,15 +119,14 @@ export function createProfileGroupControls({ runtime, models = null, onChange = 
         const model = element('input', { class: 'text_pole', autocomplete: 'off', placeholder: '搜索或填写模型 ID', 'aria-label': '模型 ID' });
         const name = element('input', { class: 'text_pole', autocomplete: 'off', placeholder: '留空时使用模型 ID', 'aria-label': '模型方案名称' });
         const status = element('div', { class: 'cw-progress cw-note', role: 'status' });
-        const suggestions = new Map();
-        for (const profile of members) if (profile.model) suggestions.set(profile.model, { id: profile.model, label: profile.model });
         const source = sourceOf(base);
+        const suggestions = new Map();
+        for (const profile of members) if (sourceOf(profile) === source && profile.model) suggestions.set(profile.model, { id: profile.model, label: profile.model });
         const selector = CUSTOM_MODEL_SOURCES[source]?.selector
             ?? (source === 'custom' ? '#model_custom_select' : source === 'azure_openai' ? '#azure_openai_model' : null);
         const selected = runtime.selected();
         // A relay's fetched list belongs to its active connection, unlike static provider options.
-        const sameConnection = selected && (runtime.groupFor(selected)?.id === group.id
-            || runtime.groupCandidates(base).some(profile => profile.id === selected.id));
+        const sameConnection = selected?.id === base.id;
         if (selector && (source !== 'custom' || sameConnection)) {
             for (const option of document.querySelector(selector)?.options ?? []) {
                 if (option.value && !option.disabled && !option.hidden && !option.parentElement?.disabled && !option.parentElement?.hidden) {
@@ -139,7 +138,7 @@ export function createProfileGroupControls({ runtime, models = null, onChange = 
         if (Object.hasOwn(CUSTOM_MODEL_SOURCES, source)) {
             for (const entry of models?.list(source) ?? []) suggestions.set(entry.id, { ...entry, custom: true });
         }
-        const modelField = field('模型', model, '地址、密钥和代理沿用此连接组。');
+        const modelField = field('模型', model, '新方案初始沿用所选方案的连接和密钥，保存后可独立更换。');
         const picker = installModelPicker(model);
         picker.setItems([...suggestions.values()]);
         const save = button('保存', async () => {
@@ -163,7 +162,7 @@ export function createProfileGroupControls({ runtime, models = null, onChange = 
             try { await runtime.renameGroup(group.id, name.value.trim()); onChange(); closeEditor(root); }
             catch (error) { status.textContent = error.message; report(error); }
         }, '', { textOnly: true });
-        const edit = button('编辑公共连接', async () => {
+        const edit = button('编辑组内方案', async () => {
             const current = runtime.groups().find(entry => entry.id === group.id);
             const base = preferredProfile(runtime.profiles().filter(profile => current?.profileIds.includes(profile.id)));
             if (!base) { status.textContent = '此连接组已没有可用的方案。'; return; }
@@ -175,7 +174,7 @@ export function createProfileGroupControls({ runtime, models = null, onChange = 
             catch (error) { status.textContent = error.message; report(error); }
         }, '', { textOnly: true });
         root.append(element('h3', { text: '管理连接组' }), field('连接组名称', name),
-            element('div', { class: 'cw-note', text: `组内 ${group.profileIds.length} 个模型方案共享地址、密钥和代理。编辑公共连接时保留各自的模型与附加参数；更换 API 来源会将编辑的方案移出此组。` }),
+            element('div', { class: 'cw-note', text: `组内 ${group.profileIds.length} 个方案按相同地址归类。每个方案独立保存密钥、模型、API 来源和其他设置；编辑一个方案不影响其他方案，更换到其他地址时会移出原组。` }),
             element('div', { class: 'cw-note', text: '解散只移除分组，保留所有方案和密钥。' }), status,
             element('div', { class: 'cw-footer' }, [edit, remove, save]));
         await dialog(root);
@@ -226,7 +225,7 @@ export function createProfileGroupControls({ runtime, models = null, onChange = 
         const { group, expanded } = item;
         const row = element('div', { class: 'cw-group-heading', 'data-cw-group-id': group?.id ?? '' });
         if (!group) { row.append(element('span', { class: 'cw-group-name', text: '未分组' }), element('small', { class: 'cw-group-count cw-note', text: String(item.count) })); return row; }
-        const toggle = element('button', { type: 'button', class: 'cw-group-disclosure', 'aria-label': `${expanded ? '收起' : '展开'}连接组 ${group.name}`,
+        const toggle = element('button', { type: 'button', class: 'cw-group-disclosure no-theme-sync', 'aria-label': `${expanded ? '收起' : '展开'}连接组 ${group.name}`,
             'aria-expanded': String(expanded), disabled: actionBusy || isBusy() || getMulti(), onclick: () => {
                 if (actionBusy || isBusy() || getMulti()) return;
                 if (collapsed.has(group.id)) collapsed.delete(group.id); else collapsed.add(group.id);
