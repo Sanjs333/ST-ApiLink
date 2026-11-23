@@ -291,7 +291,7 @@ export function installNativeModelGrouping({ root = document, onError = console.
             if (!select.hasAttribute('data-st-select-styler-processed') || select.multiple) continue;
             let owner = styledSelectControls.get(select);
             // An active picker already owns the row; moving only its native select separates the controls.
-            if (!owner && select.classList.contains('cw-picker-native')) continue;
+            if (!owner && (select.classList.contains('cw-picker-native') || select.hasAttribute('data-cw-picker-native-control'))) continue;
             if (!owner) {
                 const row = documentRef.createElement('div'); row.className = 'cw-styled-select-row';
                 if (select.classList.contains('flex1')) row.classList.add('flex1');

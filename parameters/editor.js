@@ -24,7 +24,7 @@ function updatePresetOptions(select, presets, defaults) {
     select.replaceChildren(fragment);
 }
 
-export function createParameterPresetControls({ store, readFields, writeFields, onError = showError, searchable = true }) {
+export function createParameterPresetControls({ store, readFields, writeFields, onError = showError, nativeControl = false }) {
     const root = element('div', { class: 'cw-field cw-parameter-presets' });
     root.dataset.cwParameterPresets = '';
     const select = element('select', { class: 'text_pole', 'aria-label': '附加参数预设' });
@@ -81,7 +81,7 @@ export function createParameterPresetControls({ store, readFields, writeFields, 
         element('div', { class: 'cw-parameter-preset-row' }, [select, edit]), status);
     const unsubscribe = store.subscribe(() => refresh());
     refresh();
-    const removePicker = searchable ? installSearchableSelects({ root, selectors: ['select'], autoGroup: true, replaceExisting: true, onError }) : () => {};
+    const removePicker = installSearchableSelects({ root, selectors: ['select'], autoGroup: true, replaceExisting: true, nativeControl, onError });
     return { root, refresh, openEditor, cleanup() {
         if (stopped) return;
         stopped = true;

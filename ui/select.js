@@ -200,7 +200,7 @@ function select2Containers(select) {
 }
 
 /** Enhance single-select controls while retaining their options and native events. */
-export function installSearchableSelects({ root = document, selectors = DEFAULT_SELECTORS, autoGroup = false, replaceExisting = false, onError = console.error } = {}) {
+export function installSearchableSelects({ root = document, selectors = DEFAULT_SELECTORS, autoGroup = false, replaceExisting = false, nativeControl = false, onError = console.error } = {}) {
     const documentRef = root.ownerDocument ?? root;
     const windowRef = documentRef.defaultView;
     const selector = Array.isArray(selectors) ? selectors.join(',') : selectors;
@@ -216,6 +216,7 @@ export function installSearchableSelects({ root = document, selectors = DEFAULT_
 
     function createPicker(select) {
         const superseded = new Map();
+        let select2Visibility = null;
         let existingHeight = 0;
         const concealExisting = () => {
             if (!replaceExisting) return;
@@ -226,34 +227,46 @@ export function installSearchableSelects({ root = document, selectors = DEFAULT_
                 if (!superseded.has(container)) superseded.set(container, container.classList.contains('cw-picker-superseded'));
                 if (!container.classList.contains('cw-picker-superseded')) container.classList.add('cw-picker-superseded');
             }
+            if (nativeControl && select.classList.contains('select2-hidden-accessible')) {
+                select2Visibility ??= { tabIndex: select.getAttribute('tabindex'), ariaHidden: select.getAttribute('aria-hidden') };
+                select.classList.remove('select2-hidden-accessible');
+                if (select.tabIndex < 0) select.tabIndex = 0;
+                if (select.getAttribute('aria-hidden') === 'true') select.removeAttribute('aria-hidden');
+            }
         };
         const previousSize = { width: select.offsetWidth, height: select.offsetHeight };
         const previousContainer = replaceExisting ? select2Containers(select)[0] : null;
         const initialSize = previousContainer?.offsetWidth > 1 ? { width: previousContainer.offsetWidth, height: previousContainer.offsetHeight } : previousSize;
         const savedTabIndex = select.getAttribute('tabindex');
         const savedAriaHidden = select.getAttribute('aria-hidden');
-        select.classList.add('cw-picker-native');
-        const initialStyle = windowRef.getComputedStyle(select);
+        const savedTriggerAttributes = new Map(['aria-haspopup', 'aria-expanded', 'aria-controls'].map(name => [name, select.getAttribute(name)]));
+        if (nativeControl) select.setAttribute('data-cw-picker-native-control', '');
+        else select.classList.add('cw-picker-native');
         concealExisting();
+        const initialStyle = windowRef.getComputedStyle(select);
         const parentStyle = windowRef.getComputedStyle(select.parentElement);
         const parentWidth = select.parentElement.clientWidth - (parseFloat(parentStyle.paddingLeft) || 0) - (parseFloat(parentStyle.paddingRight) || 0);
         const id = `cw-picker-${++nextId}`;
-        const wrapper = documentRef.createElement('div');
-        wrapper.className = 'cw-picker';
-        wrapper.style.margin = initialStyle.margin;
-        if (select.classList.contains('flex1')) wrapper.classList.add('flex1');
-        else wrapper.style.width = select.style.width || (!initialSize.width || Math.abs(initialSize.width - parentWidth) < 2 ? '100%' : `${initialSize.width}px`);
-        wrapper.dataset.cwUi = '';
-        const trigger = documentRef.createElement('button');
-        trigger.type = 'button';
-        trigger.className = 'cw-picker-trigger text_pole';
+        const wrapper = nativeControl ? select : documentRef.createElement('div');
+        const trigger = nativeControl ? select : documentRef.createElement('button');
+        if (!nativeControl) {
+            wrapper.className = 'cw-picker';
+            wrapper.style.margin = initialStyle.margin;
+            if (select.classList.contains('flex1')) wrapper.classList.add('flex1');
+            else wrapper.style.width = select.style.width || (!initialSize.width || Math.abs(initialSize.width - parentWidth) < 2 ? '100%' : `${initialSize.width}px`);
+            wrapper.dataset.cwUi = '';
+            trigger.type = 'button';
+            trigger.className = 'cw-picker-trigger text_pole';
+        }
         trigger.setAttribute('aria-haspopup', 'listbox');
         trigger.setAttribute('aria-expanded', 'false');
         trigger.setAttribute('aria-controls', `${id}-results`);
-        const caption = documentRef.createElement('span');
-        caption.className = 'cw-picker-caption';
-        trigger.append(caption);
-        wrapper.append(trigger);
+        const caption = nativeControl ? null : documentRef.createElement('span');
+        if (caption) {
+            caption.className = 'cw-picker-caption';
+            trigger.append(caption);
+            wrapper.append(trigger);
+        }
 
         const panel = documentRef.createElement('div');
         panel.className = 'cw-picker-panel';
@@ -295,9 +308,11 @@ export function installSearchableSelects({ root = document, selectors = DEFAULT_
         const popover = typeof panel.showPopover === 'function';
         if (popover) panel.setAttribute('popover', 'manual');
         (select.closest('dialog') ?? documentRef.body).append(panel);
-        select.after(wrapper);
-        select.setAttribute('tabindex', '-1');
-        select.setAttribute('aria-hidden', 'true');
+        if (!nativeControl) {
+            select.after(wrapper);
+            select.setAttribute('tabindex', '-1');
+            select.setAttribute('aria-hidden', 'true');
+        }
 
         let entries = [];
         let entriesDirty = true;
@@ -344,10 +359,10 @@ export function installSearchableSelects({ root = document, selectors = DEFAULT_
             rowHeight = height;
             groupState.style.height = `${height}px`;
             groupState.style.width = `${height}px`;
-            trigger.style.setProperty('height', `${height}px`, 'important');
+            if (!nativeControl) trigger.style.setProperty('height', `${height}px`, 'important');
             // Most API sources start in hidden panels; sample their theme when they become visible.
             if (measuredHeight > 0) syncTheme({ style });
-            wrapper.style.margin = metrics.margin;
+            if (!nativeControl) wrapper.style.margin = metrics.margin;
             panel.style.fontFamily = metrics.fontFamily;
             panel.style.fontSize = metrics.fontSize;
             panel.style.setProperty('--cw-picker-row-height', `${rowHeight}px`);
@@ -370,7 +385,7 @@ export function installSearchableSelects({ root = document, selectors = DEFAULT_
                     '--SmartThemeBlurTintColor', '--SmartThemeQuoteColor'].map(property => style.getPropertyValue(property)), ...ancestors].join('|');
             if (signature === themeSignature) return;
             themeSignature = signature;
-            syncPickerTheme(panel, select, { trigger, search });
+            syncPickerTheme(panel, select, { trigger: nativeControl ? undefined : trigger, search });
         }
 
         function position() {
@@ -423,12 +438,14 @@ export function installSearchableSelects({ root = document, selectors = DEFAULT_
             }
             if (lastValue !== select.value || lastIndex !== select.selectedIndex || lastDisabled !== select.disabled) {
                 const option = select.selectedOptions[0];
-                caption.textContent = option?.label || '请选择';
-                trigger.title = caption.textContent;
-                const label = selectLabel(select);
-                trigger.setAttribute('aria-label', label);
-                trigger.setAttribute('aria-description', caption.textContent);
-                trigger.disabled = select.disabled;
+                if (caption) {
+                    caption.textContent = option?.label || '请选择';
+                    trigger.title = caption.textContent;
+                    const label = selectLabel(select);
+                    trigger.setAttribute('aria-label', label);
+                    trigger.setAttribute('aria-description', caption.textContent);
+                    trigger.disabled = select.disabled;
+                }
                 lastValue = select.value;
                 lastIndex = select.selectedIndex;
                 lastDisabled = select.disabled;
@@ -438,10 +455,10 @@ export function installSearchableSelects({ root = document, selectors = DEFAULT_
                     else render();
                 }
             }
-            wrapper.hidden = !select.isConnected || select.hidden || nativeHidden;
+            if (!nativeControl) wrapper.hidden = !select.isConnected || select.hidden || nativeHidden;
             lastHidden = select.hidden;
             lastConnected = select.isConnected;
-            if (trigger.disabled || wrapper.hidden || !panel.hidden && !trigger.getClientRects().length) close();
+            if (trigger.disabled || wrapper.hidden || nativeHidden || !panel.hidden && !trigger.getClientRects().length) close();
         }
 
         function rebuild() {
@@ -613,7 +630,7 @@ export function installSearchableSelects({ root = document, selectors = DEFAULT_
 
         function open() {
             sync();
-            if (stopped || trigger.disabled || wrapper.hidden) return;
+            if (stopped || trigger.disabled || wrapper.hidden || nativeHidden) return;
             openedPickers.get(documentRef)?.close();
             opened = picker;
             openedPickers.set(documentRef, picker);
@@ -651,7 +668,22 @@ export function installSearchableSelects({ root = document, selectors = DEFAULT_
             setHighlight(index);
         }
 
-        listen(trigger, 'click', () => panel.hidden ? open() : close());
+        if (nativeControl) {
+            const activate = event => {
+                if (select.disabled || event.type === 'mousedown' && event.button !== 0) return;
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                if (panel.hidden) open(); else close({ focus: true });
+            };
+            listen(trigger, 'mousedown', activate, true);
+            listen(trigger, 'touchstart', event => { event.preventDefault(); event.stopImmediatePropagation(); }, { capture: true, passive: false });
+            listen(trigger, 'touchend', activate, { capture: true, passive: false });
+            listen(trigger, 'click', event => {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                if (event.detail === 0) { if (panel.hidden) open(); else close({ focus: true }); }
+            }, true);
+        } else listen(trigger, 'click', () => panel.hidden ? open() : close());
         // The portal is outside its owning drawer. Core listens on html and would
         // treat its pointer/touch presses as outside presses; keep their defaults.
         for (const type of ['mousedown', 'touchstart']) listen(panel, type, event => event.stopPropagation());
@@ -660,9 +692,13 @@ export function installSearchableSelects({ root = document, selectors = DEFAULT_
             if (event.target.closest('[data-group-key], [data-match-index]')) event.preventDefault();
         });
         listen(trigger, 'keydown', event => {
-            if (['ArrowDown', 'ArrowUp'].includes(event.key)) { event.preventDefault(); open(); }
-        });
-        listen(select, 'focus', () => { if (!stopped) trigger.focus(); });
+            if (['ArrowDown', 'ArrowUp'].includes(event.key) || nativeControl && ['Enter', ' ', 'F4'].includes(event.key)) {
+                event.preventDefault();
+                if (nativeControl) event.stopImmediatePropagation();
+                open();
+            }
+        }, nativeControl);
+        if (!nativeControl) listen(select, 'focus', () => { if (!stopped) trigger.focus(); });
         listen(select, 'change', () => { lastValue = null; sync({ metrics: false }); });
         listen(search, 'input', filter);
         listen(groupState, 'mousedown', event => event.preventDefault());
@@ -733,15 +769,26 @@ export function installSearchableSelects({ root = document, selectors = DEFAULT_
             if (updateTimer !== null) windowRef.clearTimeout(updateTimer);
             if (scrollFrame !== null) windowRef.cancelAnimationFrame(scrollFrame);
             for (const remove of listeners) remove();
-            wrapper.remove();
+            if (!nativeControl) wrapper.remove();
             panel.remove();
             for (const [container, wasHidden] of superseded) if (!wasHidden) container.classList.remove('cw-picker-superseded');
-            select.classList.remove('cw-picker-native');
-            if (select.getAttribute('tabindex') === '-1') {
+            if (nativeControl) {
+                select.removeAttribute('data-cw-picker-native-control');
+                for (const [name, value] of savedTriggerAttributes) {
+                    if (value === null) select.removeAttribute(name); else select.setAttribute(name, value);
+                }
+                if (select2Visibility && [...superseded.keys()].some(container => container.isConnected) && select.hasAttribute('data-select2-id')) {
+                    select.classList.add('select2-hidden-accessible');
+                    for (const [name, value] of [['tabindex', select2Visibility.tabIndex], ['aria-hidden', select2Visibility.ariaHidden]]) {
+                        if (value === null) select.removeAttribute(name); else select.setAttribute(name, value);
+                    }
+                }
+            } else select.classList.remove('cw-picker-native');
+            if (!nativeControl && select.getAttribute('tabindex') === '-1') {
                 if (savedTabIndex === null) select.removeAttribute('tabindex');
                 else select.setAttribute('tabindex', savedTabIndex);
             }
-            if (select.getAttribute('aria-hidden') === 'true') {
+            if (!nativeControl && select.getAttribute('aria-hidden') === 'true') {
                 if (savedAriaHidden === null) select.removeAttribute('aria-hidden');
                 else select.setAttribute('aria-hidden', savedAriaHidden);
             }
