@@ -49,7 +49,7 @@ function modelEntry(id, label = id) {
 // getSettings returns extension_settings.connectionWorkbench.
 export function installCustomModels({ getSettings, saveSettings, onError = () => {},
     documentRef = globalThis.document, getContext = () => globalThis.SillyTavern?.getContext?.(),
-    Observer = globalThis.MutationObserver } = {}) {
+    Observer = globalThis.MutationObserver, jQueryRef = documentRef?.defaultView?.jQuery ?? globalThis.jQuery } = {}) {
     if (typeof getSettings !== 'function' || typeof saveSettings !== 'function' || !documentRef) {
         throw new Error('自定义模型需要酒馆设置和页面接口。');
     }
@@ -95,12 +95,28 @@ export function installCustomModels({ getSettings, saveSettings, onError = () =>
         const EventClass = documentRef.defaultView?.Event ?? globalThis.Event;
         select.dispatchEvent(new EventClass('change', { bubbles: true }));
     }
+    function detach(source) {
+        const prior = attached.get(source);
+        if (!prior) return;
+        prior.select.removeEventListener('change', prior.handler, true);
+        prior.jquerySelect?.off('change.connectionWorkbenchModels', prior.syntheticHandler);
+        attached.delete(source);
+    }
     function attach(source, select) {
         const prior = attached.get(source);
         if (prior?.select === select) return;
-        if (prior) prior.select.removeEventListener('change', prior.handler, true);
-        const handler = () => {
+        detach(source);
+        const handler = event => {
             const id = select.value;
+            const desired = preferred.get(source);
+            // A rebuilt native list temporarily omits our additions. Its synthetic
+            // fallback change must not replace the model that will be reinserted.
+            if (desired && id !== desired && !event?.isTrusted
+                && ![...select.options].some(option => option.value === desired)) {
+                pendingSources.add(source);
+                schedule();
+                return;
+            }
             const revision = bump(source);
             if (!registered(source, id)) { preferred.delete(source); return; }
             preferred.set(source, id);
@@ -114,13 +130,18 @@ export function installCustomModels({ getSettings, saveSettings, onError = () =>
             });
         };
         select.addEventListener('change', handler, true);
-        attached.set(source, { select, handler });
+        // Native capture listeners do not receive jQuery's .trigger('change'),
+        // which the host uses for /model and connection profiles. Native events
+        // have already been handled in capture and must not be processed twice.
+        const jquerySelect = typeof jQueryRef === 'function' ? jQueryRef(select) : null;
+        const syntheticHandler = event => { if (!event.originalEvent) handler(event); };
+        jquerySelect?.on('change.connectionWorkbenchModels', syntheticHandler);
+        attached.set(source, { select, handler, jquerySelect, syntheticHandler });
     }
     function project(source) {
         const select = documentRef.querySelector(metadata(source).selector);
         if (!select) {
-            const prior = attached.get(source);
-            if (prior) { prior.select.removeEventListener('change', prior.handler, true); attached.delete(source); }
+            detach(source);
             return;
         }
         attach(source, select);
@@ -263,7 +284,7 @@ export function installCustomModels({ getSettings, saveSettings, onError = () =>
             disposed = true;
             observer?.disconnect();
             for (const unsubscribe of subscriptions) unsubscribe();
-            for (const { select, handler } of attached.values()) select.removeEventListener('change', handler, true);
+            for (const source of attached.keys()) detach(source);
             for (const option of ownedOptions) option.remove();
             ownedOptions.clear(); attached.clear(); preferred.clear(); pendingSources.clear();
         },
