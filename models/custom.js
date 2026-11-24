@@ -47,7 +47,7 @@ function modelEntry(id, label = id) {
 }
 
 // getSettings returns extension_settings.connectionWorkbench.
-export function installCustomModels({ getSettings, saveSettings, onError = () => {},
+export function installCustomModels({ getSettings, saveSettings, onError = () => {}, initialSettings = null,
     documentRef = globalThis.document, getContext = () => globalThis.SillyTavern?.getContext?.(),
     Observer = globalThis.MutationObserver, jQueryRef = documentRef?.defaultView?.jQuery ?? globalThis.jQuery } = {}) {
     if (typeof getSettings !== 'function' || typeof saveSettings !== 'function' || !documentRef) {
@@ -219,11 +219,11 @@ export function installCustomModels({ getSettings, saveSettings, onError = () =>
         collectChanges(records, pendingSources);
         if (pendingSources.size) schedule();
     }) : null;
-    function synchronizeSelections() {
+    function synchronizeSelections(settings = runtime()) {
         if (disposed) return;
         for (const [source, config] of Object.entries(CUSTOM_MODEL_SOURCES)) {
             bump(source);
-            const id = runtime()?.[config.field];
+            const id = settings?.[config.field] ?? runtime()?.[config.field];
             if (registered(source, id)) preferred.set(source, id);
             else preferred.delete(source);
         }
@@ -233,11 +233,13 @@ export function installCustomModels({ getSettings, saveSettings, onError = () =>
     for (const name of ['SETTINGS_LOADED', 'CONNECTION_PROFILE_LOADED', 'OAI_PRESET_CHANGED_AFTER', 'CHATCOMPLETION_SOURCE_CHANGED']) {
         const event = context?.eventTypes?.[name];
         if (event && typeof context.eventSource?.on === 'function') {
-            context.eventSource.on(event, synchronizeSelections);
-            subscriptions.push(() => context.eventSource.removeListener(event, synchronizeSelections));
+            const handler = () => synchronizeSelections();
+            context.eventSource.on(event, handler);
+            subscriptions.push(() => context.eventSource.removeListener(event, handler));
         }
     }
-    synchronizeSelections();
+    // A saved custom ID may already have been cleared by the native startup handler.
+    synchronizeSelections(initialSettings ?? runtime());
     function upsert(source, id, label, selectModel) {
         if (disposed) throw new Error('自定义模型管理已停用。');
         const entry = modelEntry(id, label ?? id);

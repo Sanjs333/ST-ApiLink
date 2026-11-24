@@ -1,4 +1,4 @@
-import { CLIENT_VERSION, eventSource, saveSettingsDebounced, resultCheckStatus, main_api, getRequestHeaders } from '../../../../script.js';
+import { CLIENT_VERSION, eventSource, saveSettingsDebounced, resultCheckStatus, main_api, getRequestHeaders, settings as hostSettings, settingsReady } from '../../../../script.js';
 import { cancelStatusCheck } from './compat/status.js';
 import { event_types } from './compat/events.js';
 import { extension_settings } from '../../../extensions.js';
@@ -61,7 +61,12 @@ export async function init() {
     if (active) return;
     const removers = [];
     const removeCompatibility = installHostCompatibility();
-    const models = installCustomModels({ getSettings: settings, saveSettings: saveSettingsDebounced, onError: showError });
+    const models = installCustomModels({
+        getSettings: settings, saveSettings: saveSettingsDebounced, onError: showError,
+        // Core triggers model changes before extensions add their saved options.
+        // Only startup may use the disk snapshot; enabling later keeps the live draft.
+        initialSettings: !settingsReady ? hostSettings?.oai_settings ?? hostSettings : null,
+    });
     const parameterPresets = createParameterPresetStore({ getSettings: settings, saveSettings: saveSettingsDebounced, parseYaml: value => yaml.parse(value) });
     let managerRender = null;
     let managerButton = null;
