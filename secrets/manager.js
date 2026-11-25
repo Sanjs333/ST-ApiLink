@@ -79,7 +79,7 @@ export function createSecretManager(runtime, onError = showError) {
         }, '', { textOnly: true });
         root.append(element('h3', { text: '编辑密钥' }),
             element('div', { class: 'cw-fields' }, [field('所属服务', element('span', { text: secretName(entry.key) })),
-                field('记录 ID', element('input', { class: 'text_pole', value: entry.id, readOnly: true })), field('名称', label),
+                field('记录 ID', element('span', { class: 'cw-secret-record-id', text: entry.id })), field('名称', label),
                 field('关联方案', element('span', { text: presentation.referenceNames || '未被方案引用' })),
                 field(entry.key === SECRET_KEYS.VERTEXAI_SERVICE_ACCOUNT ? 'Service Account JSON（只读）' : '密钥内容（只读）', value)]),
             status, element('div', { class: 'cw-footer' }, [copy, save]));

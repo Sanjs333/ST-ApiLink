@@ -459,6 +459,7 @@ select.cw-picker-native.select2-hidden-accessible {
 .cw-field { display: grid; gap: 3px; min-width: 0; }
 .cw-field > span:first-child { font-weight: 600; }
 .cw-field > .text_pole { width: 100%; }
+.cw-secret-record-id { user-select: text; cursor: default; overflow-wrap: anywhere; }
 .cw-field-heading, .cw-model-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 8px; min-width: 0; }
 .cw-field-heading > span:first-child, .cw-model-heading > span:first-child { flex: none; font-weight: 600; white-space: nowrap; }
 .cw-field-note, .cw-model-status { flex: 1 1 0; min-width: 0; font-weight: normal; white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
