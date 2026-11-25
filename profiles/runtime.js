@@ -5,7 +5,7 @@ import { extension_settings } from '../../../../extensions.js';
 import { oai_settings, proxies, getChatCompletionModel, settingsToUpdate } from '../../../../openai.js';
 import { restoreCustomConnection, refreshCustomConnection, bindCustomCredential, connectChatCompletion, supportsNativeCustom, pauseLegacyRequests, assertCustomCompatibility } from '../compat/host.js';
 import { SECRET_KEYS, secret_state, readSecretState, rotateSecret, resolveSecretKey } from '../../../../secrets.js';
-import { captureCustomFields, normalizeCustomEndpoint, validateCustomSnapshot } from '../compat/custom-connection.js';
+import { captureCustomFields, normalizeCustomEndpoint, validateCustomSnapshot, CUSTOM_CONNECTION_FIELDS } from '../compat/custom-connection.js';
 import { SlashCommandParser } from '../../../../slash-commands/SlashCommandParser.js';
 import { SlashCommandScope } from '../../../../slash-commands/SlashCommandScope.js';
 import { uuidv4, cancelDebounce } from '../../../../utils.js';
@@ -62,6 +62,7 @@ export function createProfileRuntime({ models, onError = console.error, onChange
     let draftBaseline = null, switchGuardPromise = null;
     let verifiedCreationDepth = 0;
     let switchingProfileDepth = 0, savingNewConnection = false;
+    let switchQueue = Promise.resolve(), pendingSwitches = 0, loadRevision = 0;
     let detachingReasoning = false;
     const listeners = [];
     const profiles = () => extension_settings.connectionManager?.profiles ?? [];
@@ -194,11 +195,89 @@ export function createProfileRuntime({ models, onError = console.error, onChange
         Object.assign(oai_settings, structuredClone(previous));
         for (const [field, value] of Object.entries(previous)) {
             const binding = Object.values(settingsToUpdate).find(([, setting]) => setting === field);
-            if (binding) $(binding[0]).val(value).trigger('change.select2');
+            if (binding) {
+                if (binding[2]) $(binding[0]).prop('checked', value);
+                else $(binding[0]).val(value).trigger('change.select2');
+            }
         }
         $('#chat_completion_source').val(previous.chat_completion_source).trigger('change.select2');
         refreshCustomConnection();
+        models?.synchronizeSelections?.();
     };
+    const connectionFields = () => [...new Set([
+        ...Object.values(settingsToUpdate).filter(([, , , connection]) => connection).map(([, field]) => field),
+        ...CUSTOM_CONNECTION_FIELDS, ...Object.values(CUSTOM_MODEL_SOURCES).map(config => config.field),
+        ...Object.keys(capture().fields), 'chat_completion_source', 'reverse_proxy', 'proxy_password', 'custom_provider_state',
+    ])];
+    async function snapshotConnection() {
+        const api = await command('api');
+        const fields = connectionFields();
+        return {
+            api, fields, settings: structuredClone(Object.fromEntries(fields.filter(field => Object.hasOwn(oai_settings, field)).map(field => [field, oai_settings[field]]))),
+            selection: extension_settings.connectionManager?.selectedProfile ?? null, baseline: draftBaseline,
+            newName: newDraftName, namedDraft: structuredClone(groupSettings().newConnectionDraft),
+            pendingCredential: structuredClone(credentialBeforeNone), details: document.getElementById('connection_profile_details_content')?.innerHTML,
+            proxy: document.getElementById('openai_proxy_preset')?.value,
+            credentials: Object.entries(secret_state).flatMap(([key, entries]) => {
+                const id = Array.isArray(entries) ? entries.find(entry => entry.active)?.id : null;
+                return id ? [{ key, id }] : [];
+            }),
+        };
+    }
+    async function restoreConnection(previous) {
+        loadRevision++;
+        cancelStatusCheck('Connection profile rollback');
+        try {
+            if (await command('api') !== previous.api) await command('api', previous.api, { connect: 'false' });
+            for (const { key, id } of previous.credentials) {
+                if (secret_state[key]?.some(entry => entry.id === id && entry.active)) continue;
+                await rotateSecret(key, id);
+                if (!secret_state[key]?.some(entry => entry.id === id && entry.active)) throw new Error('原连接的密钥未能恢复，请重新选择连接方案。');
+            }
+        } finally {
+            for (const field of previous.fields) if (!Object.hasOwn(previous.settings, field)) delete oai_settings[field];
+            restoreDraftSettings(previous.settings);
+            $('#openai_proxy_preset').val(previous.proxy).trigger('change.select2');
+            $('.reverse_proxy_warning').toggle(Boolean(previous.settings.reverse_proxy));
+            extension_settings.connectionManager.selectedProfile = previous.selection;
+            loadedProfileId = previous.selection;
+            draftBaseline = previous.baseline;
+            newDraftName = previous.newName;
+            credentialBeforeNone = previous.pendingCredential;
+            if (previous.namedDraft === undefined) delete groupSettings().newConnectionDraft;
+            else groupSettings().newConnectionDraft = previous.namedDraft;
+            const details = document.getElementById('connection_profile_details_content');
+            if (details && previous.details !== undefined) details.innerHTML = previous.details;
+            resultCheckStatus();
+            saveSettingsDebounced();
+            syncProfileList();
+        }
+    }
+    async function switchConnection(action) {
+        const previous = await snapshotConnection();
+        switchingProfileDepth++;
+        const releaseLegacy = pauseLegacyRequests();
+        try { return await action(); }
+        catch (error) {
+            try { await restoreConnection(previous); }
+            catch (rollbackError) {
+                extension_settings.connectionManager.selectedProfile = null;
+                loadedProfileId = null;
+                draftBaseline = null;
+                saveSettingsDebounced(); syncProfileList();
+                throw new AggregateError([error, rollbackError], error.message + '；' + rollbackError.message);
+            }
+            throw error;
+        } finally { switchingProfileDepth--; releaseLegacy(); }
+    }
+    function enqueueSwitch(action) {
+        // Keep native loading, extra fields and rollback in one queue, including clearing a profile.
+        pendingSwitches++;
+        const operation = switchQueue.catch(() => {}).then(() => disposed ? false : action());
+        switchQueue = operation;
+        onChange();
+        return operation.finally(() => { pendingSwitches--; onChange(); });
+    }
     const prepareDraftProxy = label => {
         const url = oai_settings.reverse_proxy ?? '', password = oai_settings.proxy_password ?? '';
         if (!url.trim()) {
@@ -417,14 +496,24 @@ export function createProfileRuntime({ models, onError = console.error, onChange
         saveSettingsDebounced();
     }
 
-    async function applyExtras(profile) {
-        if (!profile || disposed) return;
+    async function applyExtras(profile, isCurrent = () => !disposed) {
+        if (!profile || !isCurrent()) return;
         if (profile['custom-connection']?.excluded) return;
         if (!profile[PROFILE_FIELD]) {
             if (!supportsNativeCustom && profile['custom-connection']) restoreCustomConnection(profile['custom-connection']);
             return;
         }
         const metadata = normalizeMetadata(profile[PROFILE_FIELD]);
+        // A complete Custom snapshot owns the endpoint, model and authentication together.
+        // Older duplicated workbench fields must not replace part of that saved connection.
+        if (metadata.source === 'custom' && profile['custom-connection']) {
+            const snapshot = validateCustomSnapshot(profile['custom-connection']);
+            metadata.fields = { ...snapshot.settings };
+            metadata.model = snapshot.settings.custom_model;
+            const credential = snapshot.credential;
+            metadata.credential = credential.mode === 'reference' ? { key: credential.key, id: credential.id }
+                : credential.mode === 'legacy-custom' && credential.id ? { key: SECRET_KEYS.CUSTOM, id: credential.id } : null;
+        }
         if (!supportsNativeCustom && metadata.source === 'custom') {
             const snapshot = profile['custom-connection'] ?? {
                 version: 1, settings: captureCustomFields(metadata.fields, true),
@@ -440,6 +529,7 @@ export function createProfileRuntime({ models, onError = console.error, onChange
                     if (!secret_state[SECRET_KEYS.CUSTOM]?.some(entry => entry.id === snapshot.credential.id && entry.active)) await rotateSecret(SECRET_KEYS.CUSTOM, snapshot.credential.id);
                 }
                 finally { release(); }
+                if (!isCurrent()) return;
                 if (!secret_state[SECRET_KEYS.CUSTOM]?.some(entry => entry.id === snapshot.credential.id && entry.active)) throw new Error('密钥未能切换，请重试。');
             }
         }
@@ -454,11 +544,19 @@ export function createProfileRuntime({ models, onError = console.error, onChange
         if (metadata.source === 'vertexai') $('#vertexai_auth_mode').trigger('change');
         if (metadata.source !== 'custom' && metadata.credential) {
             if (!secret_state[metadata.credential.key]?.some(entry => entry.id === metadata.credential.id && entry.active)) await rotateSecret(metadata.credential.key, metadata.credential.id);
+            if (!isCurrent()) return;
             if (!secret_state[metadata.credential.key]?.some(entry => entry.id === metadata.credential.id && entry.active)) throw new Error('密钥未能切换，请重试。');
+        }
+        const field = modelField(metadata.source);
+        if (field) {
+            oai_settings[field] = metadata.model;
+            const binding = Object.values(settingsToUpdate).find(([, setting]) => setting === field);
+            if (binding) $(binding[0]).val(metadata.model);
         }
         if (models && Object.hasOwn(CUSTOM_MODEL_SOURCES, metadata.source) && metadata.model && models.list(metadata.source).some(entry => entry.id === metadata.model)) models.select(metadata.source, metadata.model);
         if (metadata.proxy.mode === 'none') {
             await command('proxy', noProxyName());
+            if (!isCurrent()) return;
             // Preserve the direct connection even if another listener rewrites native fields.
             oai_settings.reverse_proxy = '';
             oai_settings.proxy_password = '';
@@ -470,6 +568,7 @@ export function createProfileRuntime({ models, onError = console.error, onChange
             const option = [...(document.getElementById('openai_proxy_preset')?.options ?? [])].find(entry => entry.value === metadata.proxy.name);
             if (!option) throw new Error('此方案的代理预设已不存在，请重新选择代理。');
             await command('proxy', metadata.proxy.name);
+            if (!isCurrent()) return;
         }
         refreshCustomConnection();
         saveSettingsDebounced();
@@ -508,7 +607,13 @@ export function createProfileRuntime({ models, onError = console.error, onChange
 
     function listen(type, handler) {
         if (!type) return;
-        const wrapped = async (...args) => { try { await handler(...args); } catch (error) { onError(error); } };
+        const wrapped = async (...args) => {
+            try { await handler(...args); }
+            catch (error) {
+                // A runtime switch reports its own failure after restoring the previous connection.
+                if (type !== event_types.CONNECTION_PROFILE_LOADED || !switchingProfileDepth) onError(error);
+            }
+        };
         eventSource.on(type, wrapped);
         listeners.push(() => eventSource.removeListener(type, wrapped));
     }
@@ -532,8 +637,12 @@ export function createProfileRuntime({ models, onError = console.error, onChange
         syncProfileList();
     });
     listen(event_types.CONNECTION_PROFILE_DELETED, () => { usage.prune(profiles(), secret_state); syncProfileList(); });
-    listen(event_types.CONNECTION_PROFILE_LOADED, async () => {
-        const profile = selected();
+    listen(event_types.CONNECTION_PROFILE_LOADED, async name => {
+        const current = selected();
+        if (typeof name === 'string' && name !== (current?.name ?? '<None>')) return;
+        const profile = current ? structuredClone(current) : null;
+        const revision = ++loadRevision;
+        const isCurrent = () => !disposed && revision === loadRevision && (selected()?.id ?? null) === (profile?.id ?? null);
         const mutationLoad = Boolean(profile && mutationLoads.delete(profile.id));
         const clear = Boolean(loadedProfileId && !profile && !extension_settings.connectionManager?.selectedProfile);
         loadedProfileId = profile?.id ?? null;
@@ -541,12 +650,13 @@ export function createProfileRuntime({ models, onError = console.error, onChange
         if (verifiedCreationDepth) { onChange(); return; }
         try {
             if (clear) clearCurrentConnection();
-            else await applyExtras(profile);
+            else await applyExtras(profile, isCurrent);
         }
         catch (error) { lastApplyError = { id: profile?.id, error }; throw error; }
+        if (!isCurrent()) return;
         if (profile && !switchingProfileDepth) clearNewConnectionName();
-        markClean();
-        if (profile && !mutationLoad) usage.recordProfile(profile.id);
+        if (!switchingProfileDepth) markClean();
+        if (profile && !mutationLoad && !switchingProfileDepth) usage.recordProfile(profile.id);
         onChange();
     });
     for (const type of [event_types.SECRET_WRITTEN, event_types.SECRET_DELETED, event_types.SECRET_EDITED, event_types.SECRET_ROTATED, event_types.CHATCOMPLETION_SOURCE_CHANGED, event_types.CUSTOM_CONNECTION_CHANGED]) listen(type, () => {
@@ -574,7 +684,7 @@ export function createProfileRuntime({ models, onError = console.error, onChange
     const runtime = {
         profiles, selected, capture, currentCredential, currentProxy, noProxyName, syncProfileList, isNoKey, keyContext, toggleNoKey, usage,
         groups, groupFor, createGroup, assignGroup,
-        hasUnsavedChanges, newConnectionName, validateNewConnectionName,
+        hasUnsavedChanges, newConnectionName, validateNewConnectionName, isSwitching: () => pendingSwitches > 0,
         groupCandidates(profile) {
             const base = typeof profile === 'string' ? profiles().find(entry => entry.id === profile) : profile;
             if (!groupable(base)) return [];
@@ -741,64 +851,49 @@ export function createProfileRuntime({ models, onError = console.error, onChange
             syncProfileList();
         },
         async select(profile, { skipUnsavedCheck = false } = {}) {
+            profile = profiles().find(entry => entry.id === profile?.id);
+            if (!profile) throw new Error('此连接方案已不存在，请重新选择。');
             if (!skipUnsavedCheck && selected()?.id === profile.id) return true;
             if (!await allowSwitch(profile, skipUnsavedCheck)) return false;
             validate(profile);
             mutationLoads.delete(profile.id);
             if (models && Object.hasOwn(CUSTOM_MODEL_SOURCES, profileSource(profile)) && profile.model && models.list(profileSource(profile)).some(entry => entry.id === profile.model)) models.ensureOption(profileSource(profile), profile.model);
-            const previousNewName = newDraftName;
-            const previousSelection = extension_settings.connectionManager?.selectedProfile ?? null;
-            const previousDraft = previousNewName ? snapshotDraftSettings() : null;
-            const previousBaseline = draftBaseline;
-            const oldCredential = oai_settings.custom_provider_state?.active?.credential;
-            let released = false;
-            if (oldCredential?.mode === 'reference' && !profile['custom-connection']?.excluded) {
-                const base = oai_settings.custom_provider_state.active;
-                try { validateCustomSnapshot({ version: 1, settings: captureCustomFields(oai_settings, true), ...base }); }
-                catch (error) {
-                    if (!/exact API root/.test(error.message)) throw error;
-                    validateCustomSnapshot({ version: 1, settings: captureCustomFields(oai_settings, true), ...base, credential: { mode: 'unbound' } });
-                    base.credential = { mode: 'unbound' }; released = true;
+            return switchConnection(async () => {
+                const oldCredential = oai_settings.custom_provider_state?.active?.credential;
+                if (oldCredential?.mode === 'reference' && !profile['custom-connection']?.excluded) {
+                    const base = oai_settings.custom_provider_state.active;
+                    try { validateCustomSnapshot({ version: 1, settings: captureCustomFields(oai_settings, true), ...base }); }
+                    catch (error) {
+                        if (!/exact API root/.test(error.message)) throw error;
+                        validateCustomSnapshot({ version: 1, settings: captureCustomFields(oai_settings, true), ...base, credential: { mode: 'unbound' } });
+                        base.credential = { mode: 'unbound' };
+                    }
                 }
-            }
-            lastApplyError = null;
-            cancelStatusCheck('Switching connection profile');
-            switchingProfileDepth++;
-            const releaseLegacy = pauseLegacyRequests();
-            try {
+                lastApplyError = null;
+                cancelStatusCheck('Switching connection profile');
                 await command('profile', profile.name);
                 if (lastApplyError?.id === profile.id) throw lastApplyError.error;
                 if (selected()?.id !== profile.id) throw new Error('方案未能加载，请检查它保存的来源和密钥。');
-            } catch (error) {
-                if (released && oai_settings.custom_provider_state?.active?.credential?.mode === 'unbound') oai_settings.custom_provider_state.active.credential = oldCredential;
-                if (previousNewName) {
-                    extension_settings.connectionManager.selectedProfile = previousSelection;
-                    loadedProfileId = previousSelection;
-                    restoreDraftSettings(previousDraft);
-                    draftBaseline = previousBaseline;
-                    newDraftName = previousNewName;
-                    groupSettings().newConnectionDraft = { version: 1, name: previousNewName };
-                    saveSettingsDebounced();
-                    onChange();
-                }
-                throw error;
-            } finally { switchingProfileDepth--; releaseLegacy(); }
-            if (!supportsNativeCustom) await connectChatCompletion();
-            clearNewConnectionName();
-            markClean();
-            onChange();
-            return true;
+                if (!supportsNativeCustom) await connectChatCompletion();
+                clearNewConnectionName();
+                markClean();
+                usage.recordProfile(profile.id);
+                onChange();
+                return true;
+            });
         },
         async deselect({ skipUnsavedCheck = false } = {}) {
             if (!selected()) return true;
             if (!await allowSwitch(null, skipUnsavedCheck)) return false;
-            lastApplyError = null;
-            await command('profile', '<None>');
-            if (lastApplyError) throw lastApplyError.error;
-            if (selected()) throw new Error('未能退出当前方案，请重试。');
-            markClean();
-            onChange();
-            return true;
+            return switchConnection(async () => {
+                lastApplyError = null;
+                await command('profile', '<None>');
+                if (lastApplyError) throw lastApplyError.error;
+                if (selected()) throw new Error('未能退出当前方案，请重试。');
+                markClean();
+                onChange();
+                return true;
+            });
         },
         async startNewConnection({ name, skipUnsavedCheck = false } = {}) {
             const pendingName = name === undefined ? null : validateNewConnectionName(name);
@@ -806,7 +901,7 @@ export function createProfileRuntime({ models, onError = console.error, onChange
             if (!await allowSwitch(null, skipUnsavedCheck)) return false;
             if (pendingName !== null) validateNewConnectionName(pendingName);
             if (selected()) {
-                if (!await runtime.deselect({ skipUnsavedCheck: true })) return false;
+                if (!await deselectConnection({ skipUnsavedCheck: true })) return false;
             } else clearCurrentConnection();
             setNewConnectionName(pendingName);
             markClean();
@@ -1091,5 +1186,11 @@ export function createProfileRuntime({ models, onError = console.error, onChange
             if (groups().some(group => group.profileIds.length)) syncProfileList(true);
         },
     };
+    const selectConnection = runtime.select.bind(runtime);
+    const deselectConnection = runtime.deselect.bind(runtime);
+    const startNewConnection = runtime.startNewConnection.bind(runtime);
+    runtime.select = (...args) => enqueueSwitch(() => selectConnection(...args));
+    runtime.deselect = (...args) => enqueueSwitch(() => deselectConnection(...args));
+    runtime.startNewConnection = (...args) => enqueueSwitch(() => startNewConnection(...args));
     return runtime;
 }

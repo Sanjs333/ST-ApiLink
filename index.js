@@ -3,7 +3,7 @@ import { cancelStatusCheck } from './compat/status.js';
 import { event_types } from './compat/events.js';
 import { extension_settings } from '../../../extensions.js';
 import { oai_settings, getChatCompletionModel } from '../../../openai.js';
-import { refreshCustomConnection, installHostCompatibility, supportsNativeCustom } from './compat/host.js';
+import { refreshCustomConnection, installHostCompatibility } from './compat/host.js';
 import { yaml } from './compat/libraries.js';
 import { secret_state, rotateSecret } from '../../../secrets.js';
 import { validateCustomSnapshot, captureCustomFields } from './compat/custom-connection.js';
@@ -11,6 +11,7 @@ import { addLocaleData, getCurrentLocale, translate } from '../../../i18n.js';
 import { installApiSelects } from './native/api-selects.js';
 import { installCustomModels, CUSTOM_MODEL_SOURCES } from './models/custom.js';
 import { createProfileRuntime, sourceKey, isDispatchingProfile } from './profiles/runtime.js';
+import { createProfileSelectionHandler } from './profiles/selection.js';
 import { createSecretManager, secretName, MANAGED_SECRET_KEYS } from './secrets/manager.js';
 import { editProfile, sourceLabel } from './profiles/editor.js';
 import { element, button, dialog, field, searchInput, showError, installNativeSizing } from './ui/common.js';
@@ -130,6 +131,11 @@ export async function init() {
         try { if (current) await runtime.saveCurrentToSelected(); else await runtime.saveNewConnection(); return true; }
         catch (error) { showError(error); return false; }
     }
+
+    const selectProfileFromControl = createProfileSelectionHandler({
+        runtime, isDispatching: isDispatchingProfile, isPending: () => pendingProfileSwitch || pendingProfileSave,
+        setPending: value => { pendingProfileSwitch = value; renderStatus(); }, onError: showError,
+    });
 
     function renderStatus() {
         if (stopped) return;
@@ -662,7 +668,7 @@ export async function init() {
 
     function captureClick(event) {
         if (stopped) return;
-        if (pendingProfileSave && event.target.closest?.('#update_connection_profile, #create_connection_profile, #edit_connection_profile, #reload_connection_profile, #delete_connection_profile')) {
+        if ((pendingProfileSave || runtime.isSwitching()) && event.target.closest?.('#update_connection_profile, #create_connection_profile, #edit_connection_profile, #reload_connection_profile, #delete_connection_profile')) {
             event.preventDefault(); event.stopImmediatePropagation(); return;
         }
         const manager = event.target.closest?.('.manage-api-keys');
@@ -701,7 +707,7 @@ export async function init() {
             event.preventDefault(); event.stopImmediatePropagation();
             void guarded(deleteCurrentProfile)(); return;
         }
-        if (event.target.closest?.('#reload_connection_profile') && runtime.selected() && (!supportsNativeCustom || runtime.hasUnsavedChanges?.())) {
+        if (event.target.closest?.('#reload_connection_profile') && runtime.selected()) {
             event.preventDefault(); event.stopImmediatePropagation();
             if (pendingProfileSwitch) return;
             const current = runtime.selected();
@@ -719,25 +725,7 @@ export async function init() {
     }
     function captureChange(event) {
         if (event.target.id === 'connection_profiles') {
-            if (isDispatchingProfile()) return;
-            const profile = runtime.profiles().find(entry => entry.id === event.target.value);
-            const restore = () => { event.target.value = runtime.selected()?.id ?? ''; };
-            if (pendingProfileSwitch || pendingProfileSave) { event.preventDefault(); event.stopImmediatePropagation(); restore(); return; }
-            if (event.target.value === (runtime.selected()?.id ?? '') && runtime.hasUnsavedChanges?.()) {
-                event.preventDefault(); event.stopImmediatePropagation(); return;
-            }
-            if (profile) {
-                try { runtime.validate(profile); }
-                catch (error) { event.preventDefault(); event.stopImmediatePropagation(); restore(); showError(error); return; }
-            }
-            if (event.target.value !== (runtime.selected()?.id ?? '') && (!supportsNativeCustom || runtime.hasUnsavedChanges?.())) {
-                event.preventDefault(); event.stopImmediatePropagation(); restore();
-                pendingProfileSwitch = true;
-                void guarded(async () => {
-                    try { if (profile) await runtime.select(profile); else await runtime.deselect(); }
-                    finally { pendingProfileSwitch = false; renderStatus(); }
-                })();
-            }
+            selectProfileFromControl(event);
             return;
         }
         if (event.target.id !== 'custom_credential_select') return;

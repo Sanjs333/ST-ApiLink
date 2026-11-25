@@ -631,7 +631,7 @@ export function installSearchableSelects({ root = document, selectors = DEFAULT_
             if (!entry.option.isConnected || entry.option.closest('select') !== select) { entriesDirty = true; filter(); return; }
             select.selectedIndex = entry.option.index;
             close({ focus: true });
-            select.dispatchEvent(new windowRef.Event('change', { bubbles: true }));
+            select.dispatchEvent(new windowRef.CustomEvent('change', { bubbles: true, detail: { connectionWorkbenchUserSelection: true } }));
             lastValue = null;
             sync();
         }

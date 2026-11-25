@@ -254,6 +254,7 @@ export function installCustomModels({ getSettings, saveSettings, onError = () =>
         return { ...entry };
     }
     return {
+        synchronizeSelections,
         add(source, id, label) { return upsert(source, id, label, true); },
         ensureOption(source, id, label) { return upsert(source, id, label, false); },
         select(source, id) {
