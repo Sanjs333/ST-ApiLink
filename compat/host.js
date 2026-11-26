@@ -21,7 +21,8 @@ export function supportsRequestSecretId() {
 
 function refreshLegacyControls() {
     for (const [selector, field] of Object.values(openai.settingsToUpdate)) {
-        if (!field.startsWith('custom_')) continue;
+        // TauriTavern uses empty selectors for Custom settings without a DOM control.
+        if (!field.startsWith('custom_') || typeof selector !== 'string' || !selector.trim()) continue;
         const node = document.querySelector(selector);
         if (node && 'value' in node) node.value = openai.oai_settings[field] ?? '';
     }
